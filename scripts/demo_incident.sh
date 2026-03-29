@@ -6,19 +6,12 @@ SCENARIO="${1:-crashloop}"
 
 case "${SCENARIO}" in
   crashloop)
-    PAYLOAD='{
-      "namespace": "default",
-      "seed_events": [
-        {
-          "type": "Warning",
-          "reason": "BackOff",
-          "message": "Back-off restarting failed container in pod demo-crashloop",
-          "namespace": "default",
-          "resource_name": "demo-crashloop",
-          "resource_kind": "Pod"
-        }
-      ]
-    }'
+    RESOURCE_NAME="$(kubectl get pods -n default -l app=demo-crashloop -o jsonpath='{.items[0].metadata.name}')"
+    if [[ -z "${RESOURCE_NAME}" ]]; then
+      printf 'No demo-crashloop pod found. Run bash scripts/deploy_demo.sh first.\n'
+      exit 1
+    fi
+    PAYLOAD="$(printf '{\n  \"namespace\": \"default\",\n  \"seed_events\": [\n    {\n      \"type\": \"Warning\",\n      \"reason\": \"BackOff\",\n      \"message\": \"Back-off restarting failed container in pod %s\",\n      \"namespace\": \"default\",\n      \"resource_name\": \"%s\",\n      \"resource_kind\": \"Pod\"\n    }\n  ]\n}' "${RESOURCE_NAME}" "${RESOURCE_NAME}")"
     ;;
   oomkill)
     PAYLOAD='{

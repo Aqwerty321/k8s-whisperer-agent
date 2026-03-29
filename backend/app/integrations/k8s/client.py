@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import time
+from urllib.parse import urlparse
 from typing import Any
 
 
@@ -82,7 +83,7 @@ class K8sClient:
                 )
             )
         except Exception as exc:
-            return f"Unable to fetch logs: {exc}"
+            return f"Unable to fetch logs: {self._format_error(exc)}"
 
     def describe_pod(self, name: str, namespace: str) -> dict[str, Any]:
         self._ensure_client()
@@ -114,7 +115,7 @@ class K8sClient:
                 "namespace": namespace,
                 "pod": None,
                 "events": [],
-                "error": str(exc),
+                "error": self._format_error(exc),
             }
 
     def delete_pod(self, name: str, namespace: str) -> dict[str, Any]:
@@ -129,7 +130,7 @@ class K8sClient:
             self._core_v1.delete_namespaced_pod(name=name, namespace=namespace)
             return {"ok": True, "message": f"Deleted pod {namespace}/{name}."}
         except Exception as exc:
-            return {"ok": False, "message": str(exc)}
+            return {"ok": False, "message": self._format_error(exc)}
 
     def patch_pod(self, name: str, namespace: str, patch: dict[str, Any]) -> dict[str, Any]:
         self._ensure_client()
@@ -151,7 +152,26 @@ class K8sClient:
                 "resource_version": getattr(response.metadata, "resource_version", None),
             }
         except Exception as exc:
-            return {"ok": False, "message": str(exc)}
+            return {"ok": False, "message": self._format_error(exc)}
+
+    def _format_error(self, exc: Exception) -> str:
+        status = getattr(exc, "status", None)
+        reason = getattr(exc, "reason", None)
+        if status == 404:
+            return "Pod was not found. It may have already restarted or been deleted."
+        if status and reason:
+            return f"Kubernetes API error {status}: {reason}"
+
+        message = str(exc).strip()
+        if not message:
+            return "Unknown Kubernetes API error."
+        first_line = message.splitlines()[0].strip()
+        parsed = urlparse(first_line)
+        if parsed.scheme and parsed.netloc:
+            return f"Kubernetes API request failed for {parsed.path or '/'}"
+        if len(first_line) > 200:
+            return first_line[:197] + "..."
+        return first_line
 
     def verify_pod_recovery(
         self,

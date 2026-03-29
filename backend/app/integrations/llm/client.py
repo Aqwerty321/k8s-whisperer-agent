@@ -455,7 +455,7 @@ class LLMClient:
         if logs and "Unable to fetch logs" not in logs:
             evidence = f"{evidence} Recent logs were collected for review."
         if pod_description.get("error"):
-            evidence = f"{evidence} Pod describe output was limited: {pod_description['error']}"
+            evidence = f"{evidence} Pod inspection was limited: {pod_description['error']}"
         return (
             f"Likely root cause for {anomaly.get('resource_name', 'unknown')} is "
             f"{anomaly.get('anomaly_type', 'an anomalous condition')}. Evidence: {evidence}"

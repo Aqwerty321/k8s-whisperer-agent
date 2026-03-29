@@ -34,3 +34,9 @@ def test_secret_template_contains_expected_keys() -> None:
     assert "slack_bot_token:" in template
     assert "slack_signing_secret:" in template
     assert "gemini_api_key:" in template
+
+
+def test_deploy_backend_script_forces_rollout_restart() -> None:
+    script = Path("scripts/deploy_backend.sh").read_text(encoding="utf-8")
+
+    assert "kubectl rollout restart deployment/k8s-whisperer -n default" in script

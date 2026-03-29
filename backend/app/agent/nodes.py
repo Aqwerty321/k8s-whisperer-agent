@@ -175,6 +175,17 @@ def make_execute_node(deps: AgentDependencies):
             )
             if not outcome.get("ok"):
                 return {"result": outcome.get("message", result), "error": outcome.get("message")}
+            verification_message = str(verification.get("message") or "")
+            if verification.get("recovered"):
+                return {"result": result, "error": None}
+            if verification.get("pod") is None and "not found" in verification_message.lower():
+                return {
+                    "result": (
+                        "Restart request accepted. Original pod no longer exists and may have been "
+                        "replaced already. Follow up on workload health if the issue persists."
+                    ),
+                    "error": None,
+                }
             if not verification.get("recovered"):
                 return {"result": result, "error": verification.get("message")}
             return {"result": result, "error": None}

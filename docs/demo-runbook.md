@@ -38,7 +38,7 @@ bash scripts/demo_incident.sh crashloop | jq
 Expected outcome:
 - incident status `completed`
 - plan action `restart_pod`
-- verification message in result
+- restart outcome or replacement note in result
 
 ### OOMKilled approval flow
 ```bash

@@ -210,6 +210,16 @@ class RecordingSlackClient(SlackClient):
         return payload
 
 
+class NotFoundAfterRestartK8sClient(FakeK8sClient):
+    def verify_pod_recovery(self, **kwargs):
+        return {
+            "ok": False,
+            "recovered": False,
+            "message": "Pod was not found. It may have already restarted or been deleted.",
+            "pod": None,
+        }
+
+
 def build_settings(tmp_path: Path) -> Settings:
     return Settings(
         app_env="test",
@@ -342,6 +352,23 @@ def test_runtime_pending_pod_recommendation_uses_scheduling_evidence(tmp_path) -
     assert result["plan"]["action"] == "notify_only"
     assert "memory" in result["plan"]["parameters"]["recommendation"].lower()
     assert any("Insufficient memory" in item for item in result["anomalies"][0]["evidence"])
+
+
+def test_runtime_treats_missing_old_pod_after_restart_as_completed(tmp_path) -> None:
+    settings = build_settings(tmp_path)
+    runtime = AgentRuntime(
+        settings=settings,
+        audit_logger=AuditLogger(settings.audit_log_path),
+        k8s_client=NotFoundAfterRestartK8sClient(),
+        llm_client=LLMClient(api_key=""),
+        slack_client=RecordingSlackClient(),
+    )
+
+    result = runtime.run_once(namespace="default")
+
+    assert result["status"] == "completed"
+    assert result["approved"] is True
+    assert "Restart request accepted" in result["result"]
 
 
 def test_runtime_deduplicates_repeat_incidents_for_poller_mode(tmp_path) -> None:
