@@ -69,10 +69,15 @@ def make_diagnose_node(deps: AgentDependencies):
         if anomaly is None:
             return {"diagnosis": "No anomaly was available for diagnosis.", "diagnosis_evidence": []}
 
-        pod_name = anomaly.get("resource_name", "unknown")
         namespace = anomaly.get("namespace") or state.get("namespace") or deps.settings.k8s_namespace
-        logs = deps.k8s_client.get_pod_logs(name=pod_name, namespace=namespace)
-        pod_description = deps.k8s_client.describe_pod(name=pod_name, namespace=namespace)
+        resource_name = anomaly.get("resource_name", "unknown")
+        resource_kind = str(anomaly.get("resource_kind") or "Pod")
+        if resource_kind == "Node":
+            logs = ""
+            pod_description = deps.k8s_client.describe_node(name=resource_name)
+        else:
+            logs = deps.k8s_client.get_pod_logs(name=resource_name, namespace=namespace)
+            pod_description = deps.k8s_client.describe_pod(name=resource_name, namespace=namespace)
         diagnosis = deps.llm_client.diagnose(
             anomaly=anomaly,
             logs=logs,
@@ -367,6 +372,13 @@ def _build_diagnosis_evidence(
     if logs and "Unable to fetch logs" not in logs:
         first_line = logs.strip().splitlines()[0] if logs.strip() else "logs collected"
         evidence.append(f"logs: {first_line[:200]}")
+    node_snapshot = pod_description.get("node") if isinstance(pod_description.get("node"), dict) else None
+    if node_snapshot:
+        reason = node_snapshot.get("ready_reason") or "unknown"
+        message = node_snapshot.get("ready_message") or ""
+        entry = f"node Ready=False ({reason}): {message}".strip()
+        if entry not in evidence:
+            evidence.append(entry[:240])
     for event in pod_description.get("events", []) if isinstance(pod_description.get("events"), list) else []:
         if not isinstance(event, dict):
             continue
@@ -401,6 +413,7 @@ def _prioritize_anomalies(anomalies: list[dict[str, object]]) -> list[dict[str, 
         return anomalies
 
     priority = {
+        "NodeNotReady": 0,
         "OOMKilled": 0,
         "CrashLoopBackOff": 1,
         "PendingPod": 2,

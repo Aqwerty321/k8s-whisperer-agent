@@ -114,6 +114,13 @@ def test_demo_snapshot_script_reports_health_incidents_and_audit() -> None:
     assert "by_decision" in script
 
 
+def test_k8s_client_serializes_pod_age_for_pending_threshold_logic() -> None:
+    client = Path("backend/app/integrations/k8s/client.py").read_text(encoding="utf-8")
+
+    assert '"age_seconds"' in client
+    assert '"created_at"' in client
+
+
 def test_demo_incident_oomkill_uses_live_pod_name() -> None:
     script = Path("scripts/demo_incident.sh").read_text(encoding="utf-8")
 
@@ -135,7 +142,10 @@ def test_rbac_stays_pod_scoped_by_default() -> None:
     assert 'resources: ["pods"]' in manifest
     assert 'resources: ["pods/log"]' in manifest
     assert 'resources: ["events"]' in manifest
+    assert 'resources: ["nodes"]' in manifest
     assert 'resources: ["deployments"]' not in manifest
+    assert 'verbs: ["get", "list", "watch"]' in manifest
+    assert 'verbs: ["patch"]' not in manifest.split('resources: ["nodes"]', 1)[1]
 
 
 def test_rubric_mapping_doc_mentions_safety_and_demoability() -> None:

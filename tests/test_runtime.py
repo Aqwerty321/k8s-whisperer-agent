@@ -49,11 +49,13 @@ class FakeK8sClient(K8sClient):
                         "namespace": namespace,
                         "phase": "Pending",
                         "reason": "Unschedulable",
+                        "age_seconds": 600,
                         "restart_count": 0,
                         "waiting_reasons": [],
                         "container_statuses": [],
                     }
                 ],
+                "nodes": [],
                 "events": [
                     {
                         "type": "Warning",
@@ -66,6 +68,22 @@ class FakeK8sClient(K8sClient):
                         "last_timestamp": "2026-03-29T00:00:00Z",
                     }
                 ],
+                "error": None,
+            }
+
+        if self.mode == "node_not_ready":
+            return {
+                "pods": [],
+                "nodes": [
+                    {
+                        "name": "minikube",
+                        "ready_status": "False",
+                        "ready_reason": "KubeletNotReady",
+                        "ready_message": "container runtime is down",
+                        "unschedulable": True,
+                    }
+                ],
+                "events": [],
                 "error": None,
             }
 
@@ -89,6 +107,7 @@ class FakeK8sClient(K8sClient):
                     ],
                 }
             ],
+            "nodes": [],
             "events": [],
             "error": None,
         }
@@ -110,6 +129,7 @@ class FakeK8sClient(K8sClient):
                     "namespace": namespace,
                     "phase": "Pending",
                     "reason": "Unschedulable",
+                    "age_seconds": 600,
                     "restart_count": 0,
                     "waiting_reasons": [],
                     "container_statuses": [],
@@ -152,6 +172,20 @@ class FakeK8sClient(K8sClient):
                 "restart_count": 6,
                 "waiting_reasons": ["CrashLoopBackOff"],
                 "container_statuses": [{"name": "demo", "ready": False}],
+            },
+            "events": [],
+            "error": None,
+        }
+
+    def describe_node(self, name: str):
+        return {
+            "name": name,
+            "node": {
+                "name": name,
+                "ready_status": "False",
+                "ready_reason": "KubeletNotReady",
+                "ready_message": "container runtime is down",
+                "unschedulable": True,
             },
             "events": [],
             "error": None,
@@ -397,6 +431,41 @@ def test_runtime_pending_pod_recommendation_uses_scheduling_evidence(tmp_path) -
     assert any("Insufficient memory" in item for item in result["anomalies"][0]["evidence"])
 
 
+def test_runtime_does_not_flag_fresh_pending_pod_before_threshold(tmp_path) -> None:
+    settings = build_settings(tmp_path)
+    k8s_client = FakeK8sClient()
+    k8s_client.mode = "pending"
+    k8s_client.get_cluster_snapshot = lambda namespace: {
+        "pods": [
+            {
+                "name": "demo-pending",
+                "namespace": namespace,
+                "phase": "Pending",
+                "reason": "Unschedulable",
+                "age_seconds": 120,
+                "restart_count": 0,
+                "waiting_reasons": [],
+                "container_statuses": [],
+            }
+        ],
+        "nodes": [],
+        "events": [],
+        "error": None,
+    }
+    runtime = AgentRuntime(
+        settings=settings,
+        audit_logger=AuditLogger(settings.audit_log_path),
+        k8s_client=k8s_client,
+        llm_client=LLMClient(api_key=""),
+        slack_client=RecordingSlackClient(),
+    )
+
+    result = runtime.run_once(namespace="default")
+
+    assert result["status"] == "completed"
+    assert result["anomalies"] == []
+
+
 def test_runtime_focuses_seeded_walkthrough_on_matching_resource(tmp_path) -> None:
     settings = build_settings(tmp_path)
     runtime = AgentRuntime(
@@ -523,6 +592,7 @@ def test_runtime_maps_owner_hints_from_pod_metadata(tmp_path) -> None:
                 ],
             }
         ],
+        "nodes": [],
         "events": [],
         "error": None,
     }
@@ -568,6 +638,7 @@ def test_runtime_executes_real_workload_patch_for_deployment_owned_oomkill(tmp_p
                 ],
             }
         ],
+        "nodes": [],
         "events": [],
         "error": None,
     }
@@ -620,6 +691,7 @@ def test_runtime_prefers_owned_workload_anomaly_for_seeded_oomkill(tmp_path) -> 
                 ],
             }
         ],
+        "nodes": [],
         "events": [],
         "error": None,
     }
@@ -676,6 +748,7 @@ def test_runtime_default_profile_keeps_deployment_owned_oomkill_as_recommendatio
                 ],
             }
         ],
+        "nodes": [],
         "events": [],
         "error": None,
     }
@@ -710,3 +783,30 @@ def test_runtime_records_structured_diagnosis_evidence(tmp_path) -> None:
 
     assert result["diagnosis_evidence"]
     assert any(item.startswith("logs:") or item.startswith("event ") for item in result["diagnosis_evidence"])
+
+
+def test_runtime_escalates_node_not_ready_without_cluster_mutation(tmp_path) -> None:
+    settings = build_settings(tmp_path)
+    k8s_client = FakeK8sClient()
+    k8s_client.mode = "node_not_ready"
+    slack_client = RecordingSlackClient()
+    runtime = AgentRuntime(
+        settings=settings,
+        audit_logger=AuditLogger(settings.audit_log_path),
+        k8s_client=k8s_client,
+        llm_client=LLMClient(api_key=""),
+        slack_client=slack_client,
+    )
+
+    result = runtime.run_once(namespace="default")
+
+    assert result["status"] == "awaiting_human"
+    assert result["plan"]["action"] == "escalate_to_human"
+    assert result["anomalies"][0]["anomaly_type"] == "NodeNotReady"
+    assert result["anomalies"][0]["resource_kind"] == "Node"
+    assert result["anomalies"][0]["resource_name"] == "minikube"
+    assert any("Ready condition is False" in item for item in result["anomalies"][0]["evidence"])
+    assert any("node Ready=False" in item for item in result["diagnosis_evidence"])
+    assert not k8s_client.deleted
+    assert not k8s_client.patched_workloads
+    assert len(slack_client.messages) == 1

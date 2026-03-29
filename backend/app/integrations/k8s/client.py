@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from datetime import datetime, timezone
 import time
 from urllib.parse import urlparse
 from typing import Any
@@ -43,6 +44,7 @@ class K8sClient:
         self._ensure_client()
         return {
             "pods": self.get_pods(namespace),
+            "nodes": self.get_nodes(),
             "events": self.get_events(namespace),
             "error": self._load_error,
         }
@@ -67,6 +69,18 @@ class K8sClient:
         try:
             events = self._core_v1.list_namespaced_event(namespace=namespace).items
             return [self._serialize_event(event) for event in events]
+        except Exception as exc:
+            self._load_error = str(exc)
+            return []
+
+    def get_nodes(self) -> list[dict[str, Any]]:
+        self._ensure_client()
+        if self._core_v1 is None:
+            return []
+
+        try:
+            nodes = self._core_v1.list_node().items
+            return [self._serialize_node(node) for node in nodes]
         except Exception as exc:
             self._load_error = str(exc)
             return []
@@ -116,6 +130,32 @@ class K8sClient:
                 "name": name,
                 "namespace": namespace,
                 "pod": None,
+                "events": [],
+                "error": self._format_error(exc),
+            }
+
+    def describe_node(self, name: str) -> dict[str, Any]:
+        self._ensure_client()
+        if self._core_v1 is None:
+            return {
+                "name": name,
+                "node": None,
+                "events": [],
+                "error": self._load_error or "Kubernetes client is not configured.",
+            }
+
+        try:
+            node = self._core_v1.read_node(name=name)
+            return {
+                "name": name,
+                "node": self._serialize_node(node),
+                "events": [],
+                "error": None,
+            }
+        except Exception as exc:
+            return {
+                "name": name,
+                "node": None,
                 "events": [],
                 "error": self._format_error(exc),
             }
@@ -385,12 +425,33 @@ class K8sClient:
             "namespace": getattr(getattr(pod, "metadata", None), "namespace", "default"),
             "phase": getattr(getattr(pod, "status", None), "phase", "Unknown"),
             "reason": getattr(getattr(pod, "status", None), "reason", None),
+            "created_at": self._serialize_datetime(getattr(getattr(pod, "metadata", None), "creation_timestamp", None)),
+            "age_seconds": self._age_seconds(getattr(getattr(pod, "metadata", None), "creation_timestamp", None)),
             "owner_kind": owner_kind,
             "owner_name": owner_name,
             "restart_count": total_restarts,
             "waiting_reasons": waiting_reasons,
             "container_statuses": container_statuses,
         }
+
+    def _serialize_node(self, node: Any) -> dict[str, Any]:
+        ready_condition = self._node_ready_condition(node)
+        return {
+            "name": getattr(getattr(node, "metadata", None), "name", "unknown"),
+            "created_at": self._serialize_datetime(getattr(getattr(node, "metadata", None), "creation_timestamp", None)),
+            "age_seconds": self._age_seconds(getattr(getattr(node, "metadata", None), "creation_timestamp", None)),
+            "ready_status": getattr(ready_condition, "status", None),
+            "ready_reason": getattr(ready_condition, "reason", None),
+            "ready_message": getattr(ready_condition, "message", None),
+            "unschedulable": bool(getattr(getattr(node, "spec", None), "unschedulable", False)),
+        }
+
+    def _node_ready_condition(self, node: Any) -> Any | None:
+        conditions = getattr(getattr(node, "status", None), "conditions", None) or []
+        for condition in conditions:
+            if getattr(condition, "type", None) == "Ready":
+                return condition
+        return None
 
     def _normalize_owner_reference(self, owner: Any) -> tuple[str | None, str | None]:
         kind = getattr(owner, "kind", None)
@@ -413,3 +474,20 @@ class K8sClient:
             "count": getattr(event, "count", None),
             "last_timestamp": str(getattr(event, "last_timestamp", "")),
         }
+
+    def _serialize_datetime(self, value: Any) -> str | None:
+        if value is None:
+            return None
+        if isinstance(value, datetime):
+            if value.tzinfo is None:
+                value = value.replace(tzinfo=timezone.utc)
+            return value.astimezone(timezone.utc).isoformat()
+        return str(value)
+
+    def _age_seconds(self, value: Any) -> int | None:
+        if not isinstance(value, datetime):
+            return None
+        if value.tzinfo is None:
+            value = value.replace(tzinfo=timezone.utc)
+        delta = datetime.now(timezone.utc) - value.astimezone(timezone.utc)
+        return max(int(delta.total_seconds()), 0)

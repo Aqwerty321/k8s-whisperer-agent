@@ -34,3 +34,29 @@ def test_format_error_includes_status_reason_for_non_404_api_errors() -> None:
     message = client._format_error(FakeApiError(status=403, reason="Forbidden"))
 
     assert message == "Kubernetes API error 403: Forbidden"
+
+
+def test_serialize_node_extracts_ready_condition_details() -> None:
+    client = K8sClient()
+    node = SimpleNamespace(
+        metadata=SimpleNamespace(name="minikube", creation_timestamp=None),
+        spec=SimpleNamespace(unschedulable=True),
+        status=SimpleNamespace(
+            conditions=[
+                SimpleNamespace(
+                    type="Ready",
+                    status="False",
+                    reason="KubeletNotReady",
+                    message="container runtime is down",
+                )
+            ]
+        ),
+    )
+
+    serialized = client._serialize_node(node)
+
+    assert serialized["name"] == "minikube"
+    assert serialized["ready_status"] == "False"
+    assert serialized["ready_reason"] == "KubeletNotReady"
+    assert serialized["ready_message"] == "container runtime is down"
+    assert serialized["unschedulable"] is True

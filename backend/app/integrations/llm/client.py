@@ -7,6 +7,8 @@ from ...models import Anomaly, RemediationPlan
 
 
 class LLMClient:
+    PENDING_POD_MIN_AGE_SECONDS = 300
+
     def __init__(self, *, api_key: str, model: str = "gemini-1.5-flash", allow_workload_patches: bool = False) -> None:
         self.api_key = api_key
         self.model = model
@@ -46,6 +48,17 @@ class LLMClient:
 
         for pod in cluster_state.get("pods", []):
             anomaly = self._pod_to_anomaly(pod)
+            if anomaly is None:
+                continue
+            key = (anomaly["anomaly_type"], anomaly["resource_name"])
+            if key in seen:
+                self._merge_evidence(anomalies, anomaly)
+                continue
+            anomalies.append(anomaly)
+            seen.add(key)
+
+        for node in cluster_state.get("nodes", []):
+            anomaly = self._node_to_anomaly(node, namespace=namespace)
             if anomaly is None:
                 continue
             key = (anomaly["anomaly_type"], anomaly["resource_name"])
@@ -331,7 +344,7 @@ class LLMClient:
                 confidence=0.84,
             )
 
-        if phase == "Pending":
+        if phase == "Pending" and self._pending_pod_old_enough(pod):
             return self._build_anomaly(
                 anomaly_type="PendingPod",
                 severity="medium",
@@ -374,6 +387,35 @@ class LLMClient:
                 )
 
         return None
+
+    def _node_to_anomaly(self, node: dict[str, Any], *, namespace: str) -> Anomaly | None:
+        ready_status = str(node.get("ready_status") or "")
+        if ready_status != "False":
+            return None
+
+        name = str(node.get("name") or "unknown")
+        reason = str(node.get("ready_reason") or "")
+        message = str(node.get("ready_message") or "")
+        evidence = ["node Ready condition is False"]
+        if reason:
+            evidence.append(f"ready reason: {reason}")
+        if message:
+            evidence.append(f"ready message: {message}")
+        if node.get("unschedulable"):
+            evidence.append("node is marked unschedulable")
+
+        return self._build_anomaly(
+            anomaly_type="NodeNotReady",
+            severity="high",
+            resource_kind="Node",
+            resource_name=name,
+            namespace=namespace,
+            workload_kind="Node",
+            workload_name=name,
+            summary=f"Node {name} is reporting NotReady.",
+            confidence=0.81,
+            evidence=evidence,
+        )
 
     def _build_anomaly(
         self,
@@ -441,9 +483,16 @@ class LLMClient:
     def _pending_pod_evidence(self, pod: dict[str, Any]) -> list[str]:
         evidence = [f"pod phase: {pod.get('phase', 'Unknown')}"]
         reason = str(pod.get("reason") or "")
+        age_seconds = pod.get("age_seconds")
         if reason:
             evidence.append(f"status reason: {reason}")
+        if isinstance(age_seconds, int):
+            evidence.append(f"pending age seconds: {age_seconds}")
         return evidence
+
+    def _pending_pod_old_enough(self, pod: dict[str, Any]) -> bool:
+        age_seconds = pod.get("age_seconds")
+        return isinstance(age_seconds, int) and age_seconds >= self.PENDING_POD_MIN_AGE_SECONDS
 
     def _pending_pod_recommendation(self, anomaly: Anomaly) -> str:
         evidence_text = " ".join(str(item) for item in anomaly.get("evidence", []))
