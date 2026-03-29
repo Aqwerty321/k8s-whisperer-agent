@@ -9,6 +9,7 @@ class K8sClient:
     def __init__(self, kubeconfig: str | None = None) -> None:
         self.kubeconfig = kubeconfig
         self._core_v1: Any | None = None
+        self._apps_v1: Any | None = None
         self._load_error: str | None = None
 
     def _ensure_client(self) -> None:
@@ -30,6 +31,7 @@ class K8sClient:
                     config.load_incluster_config()
 
             self._core_v1 = client.CoreV1Api()
+            self._apps_v1 = client.AppsV1Api()
         except Exception as exc:
             self._load_error = str(exc)
 
@@ -153,6 +155,102 @@ class K8sClient:
             }
         except Exception as exc:
             return {"ok": False, "message": self._format_error(exc)}
+
+    def patch_workload(self, *, kind: str, name: str, namespace: str, patch: dict[str, Any]) -> dict[str, Any]:
+        self._ensure_client()
+        if self._apps_v1 is None:
+            return {
+                "ok": False,
+                "message": self._load_error or "Kubernetes client is not configured.",
+            }
+
+        try:
+            normalized_kind = kind.lower()
+            if normalized_kind == "deployment":
+                response = self._apps_v1.patch_namespaced_deployment(name=name, namespace=namespace, body=patch)
+            else:
+                return {"ok": False, "message": f"Unsupported workload kind for patch: {kind}"}
+            return {
+                "ok": True,
+                "message": f"Patched {kind} {namespace}/{name}.",
+                "resource_version": getattr(response.metadata, "resource_version", None),
+            }
+        except Exception as exc:
+            return {"ok": False, "message": self._format_error(exc)}
+
+    def verify_workload_rollout(
+        self,
+        *,
+        kind: str,
+        name: str,
+        namespace: str,
+        timeout_seconds: int = 60,
+        poll_interval_seconds: float = 2.0,
+    ) -> dict[str, Any]:
+        self._ensure_client()
+        if self._apps_v1 is None:
+            return {
+                "ok": False,
+                "recovered": False,
+                "message": self._load_error or "Kubernetes client is not configured.",
+                "resource": None,
+            }
+
+        deadline = time.time() + timeout_seconds
+        last_error: str | None = None
+        last_status: dict[str, Any] | None = None
+
+        while time.time() < deadline:
+            try:
+                normalized_kind = kind.lower()
+                if normalized_kind != "deployment":
+                    return {
+                        "ok": False,
+                        "recovered": False,
+                        "message": f"Unsupported workload kind for rollout verification: {kind}",
+                        "resource": None,
+                    }
+
+                deployment = self._apps_v1.read_namespaced_deployment(name=name, namespace=namespace)
+                spec = getattr(deployment, "spec", None)
+                status = getattr(deployment, "status", None)
+                replicas = int(getattr(spec, "replicas", 1) or 1)
+                generation = int(getattr(getattr(deployment, "metadata", None), "generation", 0) or 0)
+                observed_generation = int(getattr(status, "observed_generation", 0) or 0)
+                updated_replicas = int(getattr(status, "updated_replicas", 0) or 0)
+                available_replicas = int(getattr(status, "available_replicas", 0) or 0)
+                ready_replicas = int(getattr(status, "ready_replicas", 0) or 0)
+                last_status = {
+                    "replicas": replicas,
+                    "generation": generation,
+                    "observed_generation": observed_generation,
+                    "updated_replicas": updated_replicas,
+                    "available_replicas": available_replicas,
+                    "ready_replicas": ready_replicas,
+                }
+                if (
+                    observed_generation >= generation
+                    and updated_replicas >= replicas
+                    and available_replicas >= replicas
+                    and ready_replicas >= replicas
+                ):
+                    return {
+                        "ok": True,
+                        "recovered": True,
+                        "message": f"{kind} {namespace}/{name} rollout completed successfully.",
+                        "resource": last_status,
+                    }
+            except Exception as exc:
+                last_error = self._format_error(exc)
+
+            time.sleep(poll_interval_seconds)
+
+        return {
+            "ok": False,
+            "recovered": False,
+            "message": last_error or f"Timed out waiting for {kind} {namespace}/{name} rollout.",
+            "resource": last_status,
+        }
 
     def _format_error(self, exc: Exception) -> str:
         status = getattr(exc, "status", None)

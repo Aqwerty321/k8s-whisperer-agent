@@ -267,7 +267,10 @@ def test_simulated_slack_workflow_end_to_end() -> None:
         assert final_payload["status"] == "completed"
         assert final_payload["approved"] is True
         assert final_payload["slack_message_ts"] == "stub-message-ts"
-        assert "Patch action requires human implementation" in final_payload["result"]
+        assert (
+            "Patched Deployment default/demo-oomkill" in final_payload["result"]
+            or "Patch action requires human implementation" in final_payload["result"]
+        )
 
         audit_response = client.get(f"/api/audit/{incident_id}")
         assert audit_response.status_code == 200

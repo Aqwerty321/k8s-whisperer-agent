@@ -144,6 +144,7 @@ class AgentRuntime:
         )
         normalized["anomalies"] = filtered_anomalies
         normalized["suppressed_anomalies"] = suppressed_anomalies
+        normalized["tracker_anomalies"] = list(filtered_anomalies)
         if deduplicate and suppressed_anomalies and not filtered_anomalies:
             normalized["status"] = "suppressed"
         with self._lock:
@@ -198,6 +199,7 @@ class AgentRuntime:
         interrupts = [interrupt.value for interrupt in snapshot.interrupts]
         if not values.get("slack_message_ts"):
             values["slack_message_ts"] = _interrupt_slack_message_ts(interrupts)
+        values["anomalies"] = _scoped_anomalies(values)
         values["awaiting_human"] = bool(snapshot.interrupts or snapshot.next)
         if values["awaiting_human"]:
             values["status"] = "awaiting_human"
@@ -207,6 +209,7 @@ class AgentRuntime:
             values["status"] = "completed"
         values["checkpoint"] = snapshot.config
         values["interrupts"] = interrupts
+        values["tracker_anomalies"] = list(values.get("anomalies") or [])
         return values
 
 
@@ -218,3 +221,21 @@ def _interrupt_slack_message_ts(interrupts: list[Any]) -> str | None:
         if isinstance(slack_response, dict) and slack_response.get("ts"):
             return str(slack_response["ts"])
     return None
+
+
+def _scoped_anomalies(values: dict[str, Any]) -> list[Any]:
+    anomalies = list(values.get("anomalies") or [])
+    if not anomalies:
+        return anomalies
+
+    seeded_resource_names = {str(name) for name in values.get("seeded_resource_names", []) if name}
+    if not seeded_resource_names:
+        plan = values.get("plan") or {}
+        target_name = str(plan.get("target_name") or "")
+        if target_name:
+            seeded_resource_names = {target_name}
+    if not seeded_resource_names:
+        return anomalies
+
+    filtered = [anomaly for anomaly in anomalies if str(anomaly.get("resource_name") or "") in seeded_resource_names]
+    return filtered or anomalies

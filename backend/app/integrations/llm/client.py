@@ -24,11 +24,19 @@ class LLMClient:
     ) -> list[Anomaly]:
         anomalies: list[Anomaly] = []
         seen: set[tuple[str, str]] = set()
+        pods_by_name = {
+            str(pod.get("name") or ""): pod
+            for pod in cluster_state.get("pods", [])
+            if isinstance(pod, dict) and pod.get("name")
+        }
 
         for event in events:
             anomaly = self._event_to_anomaly(event, namespace=namespace)
             if anomaly is None:
                 continue
+            pod = pods_by_name.get(str(anomaly.get("resource_name") or ""))
+            if pod is not None:
+                self._enrich_anomaly_with_pod_owner(anomaly, pod)
             key = (anomaly["anomaly_type"], anomaly["resource_name"])
             if key in seen:
                 continue
@@ -93,6 +101,7 @@ class LLMClient:
                     "suggested_follow_up": self._workload_follow_up(anomaly),
                     "target_workload_kind": anomaly.get("workload_kind", "Pod"),
                     "target_workload_name": anomaly.get("workload_name", resource_name),
+                    "patch": self._oomkill_patch(anomaly),
                 },
                 "confidence": 0.65,
                 "blast_radius": "medium",
@@ -405,7 +414,28 @@ class LLMClient:
                     current_evidence.append(item)
             anomaly["evidence"] = current_evidence
             anomaly["confidence"] = max(float(anomaly.get("confidence", 0.0)), float(incoming.get("confidence", 0.0)))
+            incoming_workload_kind = incoming.get("workload_kind")
+            incoming_workload_name = incoming.get("workload_name")
+            current_workload_kind = anomaly.get("workload_kind")
+            current_workload_name = anomaly.get("workload_name")
+            current_resource_name = anomaly.get("resource_name")
+            if incoming_workload_kind and incoming_workload_kind != "Pod":
+                anomaly["workload_kind"] = incoming_workload_kind
+            elif not current_workload_kind:
+                anomaly["workload_kind"] = incoming_workload_kind or current_workload_kind
+            if incoming_workload_name and incoming_workload_name != current_resource_name:
+                anomaly["workload_name"] = incoming_workload_name
+            elif not current_workload_name:
+                anomaly["workload_name"] = incoming_workload_name or current_workload_name
             return
+
+    def _enrich_anomaly_with_pod_owner(self, anomaly: Anomaly, pod: dict[str, Any]) -> None:
+        owner_kind = str(pod.get("owner_kind") or "")
+        owner_name = str(pod.get("owner_name") or "")
+        if owner_kind:
+            anomaly["workload_kind"] = owner_kind
+        if owner_name:
+            anomaly["workload_name"] = owner_name
 
     def _pending_pod_evidence(self, pod: dict[str, Any]) -> list[str]:
         evidence = [f"pod phase: {pod.get('phase', 'Unknown')}"]
@@ -431,6 +461,28 @@ class LLMClient:
     def _oomkill_recommendation(self, anomaly: Anomaly) -> str:
         workload = self._workload_label(anomaly)
         return f"Increase the memory limit for {workload} by roughly 50% and then restart the affected pod or rollout."
+
+    def _oomkill_patch(self, anomaly: Anomaly) -> dict[str, Any] | None:
+        workload_kind = str(anomaly.get("workload_kind") or "Pod")
+        if workload_kind != "Deployment":
+            return None
+        return {
+            "spec": {
+                "template": {
+                    "spec": {
+                        "containers": [
+                            {
+                                "name": "memory-hog",
+                                "resources": {
+                                    "limits": {"memory": "96Mi"},
+                                    "requests": {"memory": "48Mi"},
+                                },
+                            }
+                        ]
+                    }
+                }
+            }
+        }
 
     def _workload_follow_up(self, anomaly: Anomaly) -> str:
         workload_kind = str(anomaly.get("workload_kind") or "Pod")

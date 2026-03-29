@@ -1,0 +1,37 @@
+# Rubric Mapping
+
+## Problem Relevance
+- Kubernetes incidents are noisy, repetitive, and risky to automate blindly.
+- K8sWhisperer turns raw pod and event signals into scoped, explainable actions.
+
+## Technical Depth
+- FastAPI backend with LangGraph orchestration
+- persistent checkpointing for paused/resumed incident threads
+- namespace-scoped Kubernetes integration with pod-level RBAC
+- Slack interactive approval callbacks with signed request verification
+
+## Safety And Reliability
+- low-blast-radius actions can be auto-approved
+- medium/high-risk actions pause for human approval
+- every incident produces an explanation and audit record
+- public ingress is restricted to health and Slack callback only
+- fallback local approval path exists if Slack or Cloudflare fails
+
+## Demoability
+- `make demo-ready` resets the environment into a clean judge-ready state
+- `make demo-reset-oomkill` restores the OOMKilled scenario so the approved fix can be shown repeatedly
+- repeatable CrashLoopBackOff auto-remediation story
+- repeatable OOMKilled human-approval story
+- repeatable PendingPod recommendation-only story
+- `make demo-snapshot` shows live runtime status, incidents, audit, and tracker state
+
+## Practicality
+- single backend service, not over-engineered microservices
+- minikube deployment path for demo realism
+- cloudflared named tunnel for stable callback URL
+
+## Stretch / Future Work
+- patching workload owners instead of pod-only recommendations
+- broader remediation catalog
+- optional on-chain attestation after incident completion
+- lightweight operator UI after the core demo path is locked

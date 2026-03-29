@@ -60,7 +60,9 @@ class IncidentTracker:
         return filtered, suppressed
 
     def hydrate_incident(self, incident: dict[str, object]) -> None:
-        anomalies = incident.get("anomalies")
+        anomalies = incident.get("tracker_anomalies")
+        if not isinstance(anomalies, list) or not anomalies:
+            anomalies = incident.get("anomalies")
         if not isinstance(anomalies, list) or not anomalies:
             return
 

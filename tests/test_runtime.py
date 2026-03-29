@@ -12,6 +12,7 @@ class FakeK8sClient(K8sClient):
     def __init__(self) -> None:
         super().__init__(kubeconfig=None)
         self.deleted: list[tuple[str, str]] = []
+        self.patched_workloads: list[tuple[str, str, str, dict]] = []
         self.mode = "crashloop"
 
     def get_cluster_snapshot(self, namespace: str):
@@ -159,6 +160,22 @@ class FakeK8sClient(K8sClient):
     def delete_pod(self, name: str, namespace: str):
         self.deleted.append((namespace, name))
         return {"ok": True, "message": f"Deleted pod {namespace}/{name}."}
+
+    def patch_workload(self, *, kind: str, name: str, namespace: str, patch: dict):
+        self.patched_workloads.append((kind, namespace, name, patch))
+        return {"ok": True, "message": f"Patched {kind} {namespace}/{name}."}
+
+    def verify_workload_rollout(self, *, kind: str, name: str, namespace: str, timeout_seconds: int = 60, poll_interval_seconds: float = 2.0):
+        return {
+            "ok": True,
+            "recovered": True,
+            "message": f"{kind} {namespace}/{name} rollout completed successfully.",
+            "resource": {
+                "replicas": 1,
+                "available_replicas": 1,
+                "ready_replicas": 1,
+            },
+        }
 
     def verify_pod_recovery(self, **kwargs):
         return {
@@ -324,6 +341,9 @@ def test_runtime_routes_oomkill_to_hitl_recommendation(tmp_path) -> None:
     assert result["plan"]["action"] == "patch_pod"
     assert result["plan"]["requires_human"] is True
     assert "memory limit" in result["plan"]["parameters"]["recommendation"]
+    assert len(result["anomalies"]) == 1
+    assert result["anomalies"][0]["anomaly_type"] == "OOMKilled"
+    assert result["anomalies"][0]["resource_name"] == "demo-oomkill"
     assert len(slack_client.messages) == 1
     assert result["slack_message_ts"] == "stub-1"
 
@@ -350,8 +370,74 @@ def test_runtime_pending_pod_recommendation_uses_scheduling_evidence(tmp_path) -
 
     assert result["status"] == "awaiting_human"
     assert result["plan"]["action"] == "notify_only"
+    assert len(result["anomalies"]) == 1
+    assert result["anomalies"][0]["resource_name"] == "demo-pending"
     assert "memory" in result["plan"]["parameters"]["recommendation"].lower()
     assert any("Insufficient memory" in item for item in result["anomalies"][0]["evidence"])
+
+
+def test_runtime_focuses_seeded_walkthrough_on_matching_resource(tmp_path) -> None:
+    settings = build_settings(tmp_path)
+    runtime = AgentRuntime(
+        settings=settings,
+        audit_logger=AuditLogger(settings.audit_log_path),
+        k8s_client=FakeK8sClient(),
+        llm_client=LLMClient(api_key=""),
+        slack_client=RecordingSlackClient(),
+    )
+
+    result = runtime.run_once(
+        namespace="default",
+        seed_events=[
+            {
+                "type": "Warning",
+                "reason": "OOMKilled",
+                "message": "Container was OOMKilled after hitting memory limit",
+                "namespace": "default",
+                "resource_name": "demo-oomkill",
+                "resource_kind": "Pod",
+            }
+        ],
+    )
+
+    assert [anomaly["resource_name"] for anomaly in result["anomalies"]] == ["demo-oomkill"]
+
+
+def test_runtime_checkpoint_view_scopes_anomalies_to_plan_target(tmp_path) -> None:
+    settings = build_settings(tmp_path)
+    runtime = AgentRuntime(
+        settings=settings,
+        audit_logger=AuditLogger(settings.audit_log_path),
+        k8s_client=FakeK8sClient(),
+        llm_client=LLMClient(api_key=""),
+        slack_client=RecordingSlackClient(),
+    )
+
+    incident_id = "incident-checkpoint-scope-1"
+    config = {"configurable": {"thread_id": incident_id}}
+    runtime.graph.update_state(
+        config,
+        {
+            "incident_id": incident_id,
+            "namespace": "default",
+            "anomalies": [
+                {"anomaly_type": "OOMKilled", "resource_name": "demo-oomkill"},
+                {"anomaly_type": "CrashLoopBackOff", "resource_name": "demo-crashloop"},
+            ],
+            "plan": {
+                "action": "patch_pod",
+                "target_name": "demo-oomkill",
+                "namespace": "default",
+                "requires_human": True,
+            },
+        },
+        as_node="plan",
+    )
+
+    incident = runtime.get_incident(incident_id)
+
+    assert incident is not None
+    assert [anomaly["resource_name"] for anomaly in incident["anomalies"]] == ["demo-oomkill"]
 
 
 def test_runtime_treats_missing_old_pod_after_restart_as_completed(tmp_path) -> None:
@@ -432,6 +518,113 @@ def test_runtime_maps_owner_hints_from_pod_metadata(tmp_path) -> None:
     assert result["anomalies"][0]["workload_kind"] == "Deployment"
     assert result["anomalies"][0]["workload_name"] == "demo-api"
     assert "Deployment `demo-api`" in result["plan"]["parameters"]["recommendation"]
+
+
+def test_runtime_executes_real_workload_patch_for_deployment_owned_oomkill(tmp_path) -> None:
+    settings = build_settings(tmp_path)
+    k8s_client = FakeK8sClient()
+    k8s_client.mode = "oomkill"
+    k8s_client.get_cluster_snapshot = lambda namespace: {
+        "pods": [
+            {
+                "name": "demo-oomkill-abc123",
+                "namespace": namespace,
+                "phase": "Running",
+                "reason": None,
+                "owner_kind": "Deployment",
+                "owner_name": "demo-oomkill",
+                "restart_count": 1,
+                "waiting_reasons": [],
+                "container_statuses": [
+                    {
+                        "name": "memory-hog",
+                        "restart_count": 1,
+                        "waiting_reason": None,
+                        "terminated_reason": "OOMKilled",
+                        "ready": False,
+                    }
+                ],
+            }
+        ],
+        "events": [],
+        "error": None,
+    }
+    slack_client = RecordingSlackClient()
+    runtime = AgentRuntime(
+        settings=settings,
+        audit_logger=AuditLogger(settings.audit_log_path),
+        k8s_client=k8s_client,
+        llm_client=LLMClient(api_key=""),
+        slack_client=slack_client,
+    )
+
+    pending = runtime.run_once(namespace="default")
+    completed = runtime.resume_incident(incident_id=pending["incident_id"], approved=True)
+
+    assert completed["status"] == "completed"
+    assert k8s_client.patched_workloads
+    kind, namespace, name, patch = k8s_client.patched_workloads[0]
+    assert kind == "Deployment"
+    assert namespace == "default"
+    assert name == "demo-oomkill"
+    assert patch["spec"]["template"]["spec"]["containers"][0]["resources"]["limits"]["memory"] == "96Mi"
+    assert "rollout completed successfully" in completed["result"]
+
+
+def test_runtime_prefers_owned_workload_anomaly_for_seeded_oomkill(tmp_path) -> None:
+    settings = build_settings(tmp_path)
+    k8s_client = FakeK8sClient()
+    k8s_client.mode = "oomkill"
+    k8s_client.get_cluster_snapshot = lambda namespace: {
+        "pods": [
+            {
+                "name": "demo-oomkill-abc123",
+                "namespace": namespace,
+                "phase": "Running",
+                "reason": None,
+                "owner_kind": "Deployment",
+                "owner_name": "demo-oomkill",
+                "restart_count": 1,
+                "waiting_reasons": [],
+                "container_statuses": [
+                    {
+                        "name": "memory-hog",
+                        "restart_count": 1,
+                        "waiting_reason": None,
+                        "terminated_reason": "OOMKilled",
+                        "ready": False,
+                    }
+                ],
+            }
+        ],
+        "events": [],
+        "error": None,
+    }
+    runtime = AgentRuntime(
+        settings=settings,
+        audit_logger=AuditLogger(settings.audit_log_path),
+        k8s_client=k8s_client,
+        llm_client=LLMClient(api_key=""),
+        slack_client=RecordingSlackClient(),
+    )
+
+    result = runtime.run_once(
+        namespace="default",
+        seed_events=[
+            {
+                "type": "Warning",
+                "reason": "OOMKilled",
+                "message": "Container was OOMKilled after hitting memory limit",
+                "namespace": "default",
+                "resource_name": "demo-oomkill",
+                "resource_kind": "Pod",
+            }
+        ],
+    )
+
+    assert result["anomalies"][0]["workload_kind"] == "Deployment"
+    assert result["anomalies"][0]["workload_name"] == "demo-oomkill"
+    assert result["plan"]["parameters"]["patch"] is not None
 
 
 def test_runtime_records_structured_diagnosis_evidence(tmp_path) -> None:

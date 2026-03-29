@@ -12,6 +12,8 @@ kubectl rollout restart deployment/k8s-whisperer -n default
 kubectl rollout status deployment/k8s-whisperer -n default
 
 kubectl exec deployment/k8s-whisperer -n default -- sh -lc 'rm -f /app/runtime/audit/audit.jsonl /app/runtime/data/langgraph-checkpoints.pkl'
+kubectl rollout restart deployment/k8s-whisperer -n default
+kubectl rollout status deployment/k8s-whisperer -n default
 
 bash "${ROOT_DIR}/scripts/deploy_demo.sh"
 

@@ -48,6 +48,16 @@ def make_detect_node(deps: AgentDependencies):
             cluster_state=state.get("cluster_state", {}),
             namespace=namespace,
         )
+        seeded_resource_names = {str(name) for name in state.get("seeded_resource_names", []) if name}
+        if seeded_resource_names:
+            filtered = [
+                anomaly
+                for anomaly in anomalies
+                if str(anomaly.get("resource_name") or "") in seeded_resource_names
+                or str(anomaly.get("workload_name") or "") in seeded_resource_names
+            ]
+            if filtered:
+                anomalies = _prioritize_anomalies(filtered)
         return {"anomalies": anomalies}
 
     return detect_node
@@ -209,11 +219,46 @@ def make_execute_node(deps: AgentDependencies):
         if action == "patch_pod":
             patch_body = plan.get("parameters", {}).get("patch")
             if isinstance(patch_body, dict):
-                outcome = deps.k8s_client.patch_pod(
-                    name=target_name,
-                    namespace=namespace,
-                    patch=patch_body,
-                )
+                target_kind = str(plan.get("target_kind") or "Pod")
+                workload_kind = str(plan.get("parameters", {}).get("target_workload_kind") or target_kind)
+                workload_name = str(plan.get("parameters", {}).get("target_workload_name") or target_name)
+                if workload_kind == "Deployment":
+                    outcome = deps.k8s_client.patch_workload(
+                        kind=workload_kind,
+                        name=workload_name,
+                        namespace=namespace,
+                        patch=patch_body,
+                    )
+                    verification = deps.k8s_client.verify_workload_rollout(
+                        kind=workload_kind,
+                        name=workload_name,
+                        namespace=namespace,
+                        timeout_seconds=max(deps.settings.verify_timeout_seconds, 30),
+                    )
+                    result = (
+                        f"Patched {workload_kind} {namespace}/{workload_name}. "
+                        f"Rollout: {verification.get('message')}"
+                    )
+                    if not outcome.get("ok"):
+                        return {
+                            "result": outcome.get("message", result),
+                            "error": outcome.get("message"),
+                        }
+                    if not verification.get("recovered"):
+                        return {
+                            "result": result,
+                            "error": verification.get("message"),
+                        }
+                    return {
+                        "result": result,
+                        "error": None,
+                    }
+                else:
+                    outcome = deps.k8s_client.patch_pod(
+                        name=target_name,
+                        namespace=namespace,
+                        patch=patch_body,
+                    )
                 return {
                     "result": outcome.get("message", "Patch pod action completed."),
                     "error": None if outcome.get("ok") else outcome.get("message"),
@@ -344,3 +389,32 @@ def _timeline_for_state(state: WhisperState) -> list[str]:
         timeline.append("auto-approved by safety gate")
     timeline.append(f"execution result: {state.get('result', 'pending')}")
     return timeline
+
+
+def _prioritize_anomalies(anomalies: list[dict[str, object]]) -> list[dict[str, object]]:
+    if not anomalies:
+        return anomalies
+
+    priority = {
+        "OOMKilled": 0,
+        "CrashLoopBackOff": 1,
+        "PendingPod": 2,
+        "ImagePullBackOff": 3,
+        "EvictedPod": 4,
+    }
+    sorted_anomalies = sorted(
+        anomalies,
+        key=lambda anomaly: (
+            priority.get(str(anomaly.get("anomaly_type") or "Unknown"), 99),
+            0 if _has_workload_owner(anomaly) else 1,
+            -float(anomaly.get("confidence") or 0.0),
+        ),
+    )
+    return [sorted_anomalies[0]]
+
+
+def _has_workload_owner(anomaly: dict[str, object]) -> bool:
+    workload_kind = str(anomaly.get("workload_kind") or "")
+    workload_name = str(anomaly.get("workload_name") or "")
+    resource_name = str(anomaly.get("resource_name") or "")
+    return bool(workload_kind and workload_kind != "Pod") or (workload_name and workload_name != resource_name)

@@ -4,6 +4,8 @@
 - Run `make demo-ready`
 - Confirm `curl -sS http://127.0.0.1:8010/health | jq`
 - Confirm `curl -sS https://slack.aqwerty321.me/health | jq`
+- Run `make demo-snapshot`
+- If you need to re-show the OOMKilled fix, run `make demo-reset-oomkill`
 - Open Slack `#alerts`
 - Open one terminal for `curl -sS http://127.0.0.1:8010/api/incidents | jq`
 - Open one terminal for `curl -sS http://127.0.0.1:8010/api/audit | jq`
@@ -28,5 +30,6 @@
 
 ## Backup Path
 - If Slack or Cloudflare misbehaves, keep the incident visible in `/api/incidents`
-- Use the audit output and runtime state to explain what would resume after approval
+- Run `bash scripts/approve_incident.sh`
+- Use the audit output and runtime state to show the same resume path locally
 - Do not improvise new features during the demo

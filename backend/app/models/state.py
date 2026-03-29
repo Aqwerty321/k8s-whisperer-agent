@@ -71,6 +71,7 @@ class WhisperState(TypedDict, total=False):
     namespace: str
     cluster_state: dict[str, Any]
     events: list[dict[str, Any]]
+    seeded_resource_names: list[str]
     anomalies: list[Anomaly]
     suppressed_anomalies: list[Anomaly]
     diagnosis: str
@@ -110,6 +111,11 @@ def build_initial_state(
         "namespace": namespace,
         "cluster_state": {},
         "events": list(seed_events or []),
+        "seeded_resource_names": [
+            str(event.get("resource_name"))
+            for event in (seed_events or [])
+            if event.get("resource_name")
+        ],
         "anomalies": [],
         "suppressed_anomalies": [],
         "diagnosis": "",

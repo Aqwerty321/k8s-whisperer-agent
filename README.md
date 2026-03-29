@@ -131,6 +131,23 @@ make demo-reset
 make demo-ready
 ```
 
+### Show a live demo snapshot
+```bash
+make demo-snapshot
+```
+
+### Reset OOMKilled demo back to the failing baseline
+```bash
+make demo-reset-oomkill
+```
+
+### Backup local approval path
+```bash
+bash scripts/approve_incident.sh
+```
+
+This simulates a signed Slack callback against the local backend for the newest pending incident and is intended only as a demo fallback if Slack or Cloudflare is unavailable.
+
 ## Core API Endpoints
 - `GET /health`
 - `GET /api/status`

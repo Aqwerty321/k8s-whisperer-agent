@@ -56,6 +56,8 @@ def test_deploy_demo_resets_crashloop_state() -> None:
 
     assert "minikube ssh -- \"sudo rm -rf /tmp/k8s-whisperer-demo-crashloop && sudo mkdir -p /tmp/k8s-whisperer-demo-crashloop\"" in script
     assert "kubectl delete deployment demo-crashloop -n default --ignore-not-found" in script
+    assert "kubectl delete pod demo-oomkill -n default --ignore-not-found" in script
+    assert "kubectl rollout status deployment/demo-oomkill -n default" in script
 
 
 def test_backend_manifest_uses_persistent_runtime_volume_and_tuned_probes() -> None:
@@ -73,6 +75,8 @@ def test_makefile_includes_demo_reset_and_ready_targets() -> None:
 
     assert "demo-reset:" in makefile
     assert "demo-ready:" in makefile
+    assert "demo-snapshot:" in makefile
+    assert "demo-reset-oomkill:" in makefile
 
 
 def test_demo_reset_script_clears_runtime_files() -> None:
@@ -80,4 +84,63 @@ def test_demo_reset_script_clears_runtime_files() -> None:
 
     assert "langgraph-checkpoints.pkl" in script
     assert "audit.jsonl" in script
-    assert "kubectl rollout restart deployment/k8s-whisperer -n default" in script
+    assert script.count("kubectl rollout restart deployment/k8s-whisperer -n default") >= 2
+
+
+def test_backup_approval_script_signs_local_callback() -> None:
+    script = Path("scripts/approve_incident.sh").read_text(encoding="utf-8")
+
+    assert "X-Slack-Request-Timestamp" in script
+    assert "X-Slack-Signature" in script
+    assert "/api/slack/actions" in script
+    assert "awaiting_human" in script
+
+
+def test_demo_snapshot_script_reports_health_incidents_and_audit() -> None:
+    script = Path("scripts/demo_snapshot.sh").read_text(encoding="utf-8")
+
+    assert "/health" in script
+    assert "/api/incidents" in script
+    assert "/api/audit" in script
+    assert "tracked_incidents" in script
+    assert "INCIDENT_LIMIT" in script
+    assert "AUDIT_LIMIT" in script
+
+
+def test_demo_incident_oomkill_uses_live_pod_name() -> None:
+    script = Path("scripts/demo_incident.sh").read_text(encoding="utf-8")
+
+    assert "kubectl get pods -n default -l app=demo-oomkill" in script
+    assert "jq -n" in script
+    assert "ownerReferences" in script
+
+
+def test_oomkill_demo_uses_deployment_workload() -> None:
+    manifest = Path("k8s/demo/oomkill.yaml").read_text(encoding="utf-8")
+
+    assert "kind: Deployment" in manifest
+    assert "72 * 1024 * 1024" in manifest
+
+
+def test_rbac_includes_deployment_patch_permissions() -> None:
+    manifest = Path("k8s/rbac.yaml").read_text(encoding="utf-8")
+
+    assert 'apiGroups: ["apps"]' in manifest
+    assert 'resources: ["deployments"]' in manifest
+    assert 'verbs: ["get", "list", "watch", "patch"]' in manifest
+
+
+def test_rubric_mapping_doc_mentions_safety_and_demoability() -> None:
+    rubric = Path("docs/rubric-mapping.md").read_text(encoding="utf-8")
+
+    assert "Safety And Reliability" in rubric
+    assert "Demoability" in rubric
+    assert "fallback local approval path" in rubric
+
+
+def test_demo_reset_oomkill_script_restores_failing_memory_limit() -> None:
+    script = Path("scripts/demo_reset_oomkill.sh").read_text(encoding="utf-8")
+
+    assert 'kubectl patch deployment demo-oomkill' in script
+    assert '"64Mi"' in script
+    assert '"32Mi"' in script

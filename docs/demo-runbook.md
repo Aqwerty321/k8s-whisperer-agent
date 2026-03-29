@@ -105,14 +105,34 @@ When using a real Slack callback URL:
 4. Verify the incident transitions from `awaiting_human` to `completed`.
 5. Check the audit endpoint for the final record.
 
+## Backup Local Approval
+If Slack or Cloudflare is unavailable during a demo:
+
+```bash
+bash scripts/demo_incident.sh summary
+bash scripts/approve_incident.sh
+```
+
+This sends a signed Slack-style callback directly to the local backend on `127.0.0.1:8010` for the newest pending incident.
+
+## Resetting OOMKilled Before A Demo
+If you already approved an OOMKilled fix and want to show that flow again:
+
+```bash
+make demo-reset-oomkill
+```
+
+This restores the `demo-oomkill` Deployment memory limit to the failing baseline so the next approval can visibly patch it again.
+
 ## Judge Flow
 1. Run `make demo-ready`.
-2. Show `curl -sS http://127.0.0.1:8010/health`.
-3. Run `bash scripts/demo_incident.sh crashloop | jq` and show the completed restart outcome.
-4. Run `bash scripts/demo_incident.sh oomkill | jq`, open Slack, and approve the newest card.
-5. Show `curl -sS http://127.0.0.1:8010/api/incidents | jq`.
-6. Show `curl -sS http://127.0.0.1:8010/api/audit | jq`.
-7. Run `bash scripts/demo_incident.sh pending | jq` and explain the recommendation-only safety path.
+2. Run `make demo-snapshot`.
+3. Show `curl -sS http://127.0.0.1:8010/health`.
+4. Run `bash scripts/demo_incident.sh crashloop | jq` and show the completed restart outcome.
+5. Run `bash scripts/demo_incident.sh oomkill | jq`, open Slack, and approve the newest card.
+6. Show `curl -sS http://127.0.0.1:8010/api/incidents | jq`.
+7. Show `curl -sS http://127.0.0.1:8010/api/audit | jq`.
+8. Run `bash scripts/demo_incident.sh pending | jq` and explain the recommendation-only safety path.
 
 ## If Something Breaks
 - Check API health: `curl http://localhost:8010/health`

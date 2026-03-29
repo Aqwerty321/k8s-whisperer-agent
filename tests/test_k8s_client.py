@@ -26,3 +26,11 @@ def test_format_error_simplifies_not_found_api_errors() -> None:
     message = client._format_error(FakeApiError(status=404, reason="Not Found"))
 
     assert message == "Pod was not found. It may have already restarted or been deleted."
+
+
+def test_format_error_includes_status_reason_for_non_404_api_errors() -> None:
+    client = K8sClient()
+
+    message = client._format_error(FakeApiError(status=403, reason="Forbidden"))
+
+    assert message == "Kubernetes API error 403: Forbidden"
