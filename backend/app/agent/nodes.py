@@ -108,7 +108,10 @@ def make_safety_gate_node(deps: AgentDependencies):
 
 
 def make_hitl_node(deps: AgentDependencies):
-    def hitl_node(state: WhisperState) -> WhisperState:
+    def notify_human_node(state: WhisperState) -> WhisperState:
+        if state.get("slack_prompt_sent"):
+            return {}
+
         plan = state.get("plan") or {}
         anomaly = latest_anomaly(state)
         summary = anomaly.get("summary", "Incident requires human review.") if anomaly else "Incident requires human review."
@@ -118,22 +121,35 @@ def make_hitl_node(deps: AgentDependencies):
             summary=summary,
             plan=plan,
         )
+        return {
+            "slack_channel": slack_response.get("channel") or state.get("slack_channel"),
+            "slack_message_ts": slack_response.get("ts") or state.get("slack_message_ts"),
+            "slack_prompt_sent": True,
+        }
+
+    def hitl_node(state: WhisperState) -> WhisperState:
+        plan = state.get("plan") or {}
+        anomaly = latest_anomaly(state)
+        summary = anomaly.get("summary", "Incident requires human review.") if anomaly else "Incident requires human review."
         decision = interrupt(
             {
                 "incident_id": state["incident_id"],
                 "summary": summary,
                 "plan": plan,
-                "slack_response": slack_response,
+                "slack_response": {
+                    "channel": state.get("slack_channel") or deps.settings.slack_default_channel,
+                    "ts": state.get("slack_message_ts"),
+                },
             }
         )
         approved = bool((decision or {}).get("approved"))
         return {
             "approved": approved,
             "awaiting_human": False,
-            "slack_message_ts": slack_response.get("ts") or state.get("slack_message_ts"),
+            "slack_prompt_sent": True,
         }
 
-    return hitl_node
+    return notify_human_node, hitl_node
 
 
 def make_execute_node(deps: AgentDependencies):

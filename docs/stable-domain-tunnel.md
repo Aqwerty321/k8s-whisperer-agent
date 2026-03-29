@@ -70,8 +70,10 @@ ingress:
 If the backend runs in minikube instead, port-forward it locally before starting the tunnel:
 
 ```bash
-kubectl port-forward svc/k8s-whisperer 8010:8010
+bash scripts/run_public_callback_bridge.sh
 ```
+
+That helper restarts both the service port-forward and the named tunnel using the checked-in template and local `deploy/cloudflared/config.yml`.
 
 ### 6. Run the named tunnel
 ```bash

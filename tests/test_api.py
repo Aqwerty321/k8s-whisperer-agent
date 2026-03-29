@@ -114,6 +114,7 @@ def test_slack_action_updates_existing_incident_message() -> None:
 def test_slack_action_is_idempotent_after_incident_completion() -> None:
     payload = {
         "channel": {"id": "C123"},
+        "container": {"message_ts": "clicked-message-ts"},
         "actions": [{"action_id": "approve_incident", "value": json.dumps({"incident_id": "incident-complete-1"})}],
     }
     body = f"payload={quote_plus(json.dumps(payload))}".encode("utf-8")
@@ -134,7 +135,7 @@ def test_slack_action_is_idempotent_after_incident_completion() -> None:
 
     assert response.status_code == 200
     assert response.json()["duplicate"] is True
-    client.app.state.slack_client.update_message.assert_not_called()
+    client.app.state.slack_client.update_message.assert_called_once()
 
 
 def test_incident_summary_endpoints_return_combined_views() -> None:
@@ -245,6 +246,7 @@ def test_simulated_slack_workflow_end_to_end() -> None:
         assert response.status_code == 200
         initial = response.json()
         assert initial["status"] == "awaiting_human"
+        assert initial["slack_message_ts"] == "stub-message-ts"
         incident_id = initial["incident_id"]
 
         callback_payload = {
@@ -264,6 +266,7 @@ def test_simulated_slack_workflow_end_to_end() -> None:
         final_payload = final_incident.json()
         assert final_payload["status"] == "completed"
         assert final_payload["approved"] is True
+        assert final_payload["slack_message_ts"] == "stub-message-ts"
         assert "Patch action requires human implementation" in final_payload["result"]
 
         audit_response = client.get(f"/api/audit/{incident_id}")

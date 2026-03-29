@@ -112,6 +112,15 @@ kubectl create secret generic k8s-whisperer-secrets \
   --from-literal=gemini_api_key="$GEMINI_API_KEY"
 ```
 
+Or start from the checked-in template at `k8s/backend-secret.template.yaml` and replace the placeholder values before applying it.
+
+### Route the public callback URL into the in-cluster backend
+```bash
+make public-bridge
+```
+
+This keeps Cloudflare pointed at local port `8010`, but serves that port from `svc/k8s-whisperer` via `kubectl port-forward`.
+
 ## Core API Endpoints
 - `GET /health`
 - `GET /api/status`

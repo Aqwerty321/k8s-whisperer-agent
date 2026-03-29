@@ -35,7 +35,9 @@ def build_graph(deps: AgentDependencies, checkpointer: PersistentInMemorySaver):
     builder.add_node("diagnose", make_diagnose_node(deps))
     builder.add_node("plan", make_plan_node(deps))
     builder.add_node("safety_gate", make_safety_gate_node(deps))
-    builder.add_node("hitl", make_hitl_node(deps))
+    notify_human_node, hitl_node = make_hitl_node(deps)
+    builder.add_node("notify_human", notify_human_node)
+    builder.add_node("hitl", hitl_node)
     builder.add_node("execute", make_execute_node(deps))
     builder.add_node("explain_log", make_explain_log_node(deps))
 
@@ -47,8 +49,9 @@ def build_graph(deps: AgentDependencies, checkpointer: PersistentInMemorySaver):
     builder.add_conditional_edges(
         "safety_gate",
         lambda state: safety_route(state, deps.settings.auto_approve_threshold),
-        {"execute": "execute", "hitl": "hitl"},
+        {"execute": "execute", "hitl": "notify_human"},
     )
+    builder.add_edge("notify_human", "hitl")
     builder.add_conditional_edges("hitl", hitl_route, {"execute": "execute", "explain_log": "explain_log"})
     builder.add_edge("execute", "explain_log")
     builder.add_edge("explain_log", END)
@@ -192,6 +195,9 @@ class AgentRuntime:
     def _snapshot_to_incident(self, *, snapshot: Any, incident_id: str) -> dict[str, Any]:
         values = dict(snapshot.values or {})
         values.setdefault("incident_id", incident_id)
+        interrupts = [interrupt.value for interrupt in snapshot.interrupts]
+        if not values.get("slack_message_ts"):
+            values["slack_message_ts"] = _interrupt_slack_message_ts(interrupts)
         values["awaiting_human"] = bool(snapshot.interrupts or snapshot.next)
         if values["awaiting_human"]:
             values["status"] = "awaiting_human"
@@ -200,5 +206,15 @@ class AgentRuntime:
         else:
             values["status"] = "completed"
         values["checkpoint"] = snapshot.config
-        values["interrupts"] = [interrupt.value for interrupt in snapshot.interrupts]
+        values["interrupts"] = interrupts
         return values
+
+
+def _interrupt_slack_message_ts(interrupts: list[Any]) -> str | None:
+    for interrupt in interrupts:
+        if not isinstance(interrupt, dict):
+            continue
+        slack_response = interrupt.get("slack_response")
+        if isinstance(slack_response, dict) and slack_response.get("ts"):
+            return str(slack_response["ts"])
+    return None

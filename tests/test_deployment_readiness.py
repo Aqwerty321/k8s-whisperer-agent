@@ -17,3 +17,20 @@ def test_backend_manifest_uses_service_account_and_health_probes() -> None:
     assert "readinessProbe:" in manifest
     assert "livenessProbe:" in manifest
     assert "name: k8s-whisperer-secrets" in manifest
+
+
+def test_bridge_script_targets_service_port_forward_and_tunnel_config() -> None:
+    script = Path("scripts/run_public_callback_bridge.sh").read_text(encoding="utf-8")
+
+    assert "kubectl port-forward \"svc/${SERVICE_NAME}\" \"${LOCAL_PORT}:${REMOTE_PORT}\" -n \"${NAMESPACE}\"" in script
+    assert "cloudflared tunnel --config \"${CONFIG_PATH}\" run \"${TUNNEL_NAME}\"" in script
+    assert "/health" in script
+
+
+def test_secret_template_contains_expected_keys() -> None:
+    template = Path("k8s/backend-secret.template.yaml").read_text(encoding="utf-8")
+
+    assert "name: k8s-whisperer-secrets" in template
+    assert "slack_bot_token:" in template
+    assert "slack_signing_secret:" in template
+    assert "gemini_api_key:" in template

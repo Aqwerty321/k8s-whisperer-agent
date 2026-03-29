@@ -314,7 +314,13 @@ def test_runtime_routes_oomkill_to_hitl_recommendation(tmp_path) -> None:
     assert result["plan"]["action"] == "patch_pod"
     assert result["plan"]["requires_human"] is True
     assert "memory limit" in result["plan"]["parameters"]["recommendation"]
-    assert slack_client.messages
+    assert len(slack_client.messages) == 1
+    assert result["slack_message_ts"] == "stub-1"
+
+    resumed = runtime.resume_incident(incident_id=result["incident_id"], approved=True)
+
+    assert resumed["status"] == "completed"
+    assert len(slack_client.messages) == 1
 
 
 def test_runtime_pending_pod_recommendation_uses_scheduling_evidence(tmp_path) -> None:

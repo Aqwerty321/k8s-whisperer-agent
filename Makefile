@@ -3,7 +3,7 @@ PIP := .venv/bin/pip
 PYTEST := .venv/bin/pytest
 UVICORN := .venv/bin/uvicorn
 
-.PHONY: venv install test run lint demo-setup demo-deploy tunnel poll-once docker-build deploy-backend
+.PHONY: venv install test run lint demo-setup demo-deploy tunnel poll-once docker-build deploy-backend public-bridge
 
 venv:
 	python3 -m venv .venv
@@ -28,6 +28,9 @@ docker-build:
 
 deploy-backend:
 	bash scripts/deploy_backend.sh
+
+public-bridge:
+	bash scripts/run_public_callback_bridge.sh
 
 tunnel:
 	bash scripts/tunnel.sh

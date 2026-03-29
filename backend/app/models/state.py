@@ -81,6 +81,7 @@ class WhisperState(TypedDict, total=False):
     audit_log: list[LogEntry]
     slack_channel: str | None
     slack_message_ts: str | None
+    slack_prompt_sent: bool
     awaiting_human: bool
     error: str | None
     continuous_mode: bool
@@ -119,6 +120,7 @@ def build_initial_state(
         "audit_log": [],
         "slack_channel": slack_channel,
         "slack_message_ts": None,
+        "slack_prompt_sent": False,
         "awaiting_human": False,
         "error": None,
         "continuous_mode": continuous_mode,

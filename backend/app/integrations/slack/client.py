@@ -246,10 +246,12 @@ class SlackClient:
             raise ValueError("Slack action payload is missing incident_id.")
 
         channel = ((payload.get("channel") or {}).get("id")) or self.default_channel
+        message_ts = ((payload.get("container") or {}).get("message_ts")) or ((payload.get("message") or {}).get("ts"))
         return {
             "incident_id": incident_id,
             "approved": action.get("action_id") == "approve_incident",
             "channel": channel,
+            "message_ts": message_ts,
             "action_id": action.get("action_id"),
             "raw_payload": payload,
         }

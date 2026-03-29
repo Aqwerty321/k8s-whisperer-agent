@@ -178,8 +178,34 @@ async def slack_actions(request: Request) -> dict[str, Any]:
 
     incident_id = interaction["incident_id"]
     approved = interaction["approved"]
+    interaction_message_ts = interaction.get("message_ts")
     existing = request.app.state.runtime.get_incident(incident_id)
     if existing and not existing.get("awaiting_human", False) and existing.get("approved") is not None:
+        existing_anomaly = ((existing or {}).get("anomalies") or [{}])[0]
+        duplicate_message_ts = interaction_message_ts or existing.get("slack_message_ts")
+        if duplicate_message_ts:
+            slack_client.update_message(
+                channel=interaction["channel"],
+                ts=duplicate_message_ts,
+                text=slack_client.render_decision_text(
+                    incident_id=incident_id,
+                    approved=bool(existing.get("approved")),
+                ),
+                blocks=slack_client.render_status_blocks(
+                    incident_id=incident_id,
+                    title="K8sWhisperer incident already processed",
+                    status=str(existing.get("status") or "completed"),
+                    anomaly_summary=existing_anomaly.get("summary") if existing else None,
+                    diagnosis=(existing or {}).get("diagnosis") if existing else None,
+                    action=((existing or {}).get("plan") or {}).get("action") if existing else None,
+                    result="Duplicate Slack callback ignored. Incident was already processed.",
+                    timeline=[
+                        "approval callback received from Slack",
+                        "incident state restored from runtime/checkpoint",
+                        "duplicate callback ignored",
+                    ],
+                ),
+            )
         return {
             "ok": True,
             "incident_id": incident_id,
@@ -189,7 +215,7 @@ async def slack_actions(request: Request) -> dict[str, Any]:
             "result": existing,
         }
 
-    slack_message_ts = existing.get("slack_message_ts") if existing else None
+    slack_message_ts = (existing.get("slack_message_ts") if existing else None) or interaction_message_ts
     channel = interaction["channel"]
     existing_anomaly = ((existing or {}).get("anomalies") or [{}])[0]
 

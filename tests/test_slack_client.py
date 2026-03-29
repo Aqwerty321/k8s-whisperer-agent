@@ -25,14 +25,15 @@ def test_parse_interaction_payload_returns_channel_and_decision() -> None:
     )
 
     body = (
-        b'payload={"channel":{"id":"C123"},"actions":[{"action_id":"approve_incident",'
-        b'"value":"{\\"incident_id\\":\\"incident-123\\"}"}]}'
+        b'payload={"channel":{"id":"C123"},"container":{"message_ts":"171234.5678"},'
+        b'"actions":[{"action_id":"approve_incident","value":"{\\"incident_id\\":\\"incident-123\\"}"}]}'
     )
     payload = client.parse_interaction_payload(body)
 
     assert payload["incident_id"] == "incident-123"
     assert payload["approved"] is True
     assert payload["channel"] == "C123"
+    assert payload["message_ts"] == "171234.5678"
 
 
 def test_render_decision_text_mentions_outcome() -> None:
