@@ -3,7 +3,7 @@ from __future__ import annotations
 import json
 from typing import Any
 
-from fastapi import APIRouter, HTTPException, Request
+from fastapi import APIRouter, BackgroundTasks, HTTPException, Request
 from fastapi import Query
 from fastapi.responses import PlainTextResponse
 from pydantic import BaseModel, Field
@@ -203,7 +203,7 @@ async def prune_demo_state(payload: PruneDemoRequest, request: Request) -> dict[
 
 
 @router.post("/api/slack/actions")
-async def slack_actions(request: Request) -> dict[str, Any]:
+async def slack_actions(request: Request, background_tasks: BackgroundTasks) -> dict[str, Any]:
     raw_body = await request.body()
     slack_client = request.app.state.slack_client
 
@@ -277,14 +277,55 @@ async def slack_actions(request: Request) -> dict[str, Any]:
             ],
         ),
     )
-    result = request.app.state.runtime.resume_incident(incident_id=incident_id, approved=approved)
+    background_tasks.add_task(
+        _resume_incident_background,
+        app=request.app,
+        incident_id=incident_id,
+        approved=approved,
+        channel=channel,
+        slack_message_ts=slack_message_ts,
+    )
     return {
         "ok": True,
         "incident_id": incident_id,
         "approved": approved,
         "channel": channel,
-        "result": result,
+        "accepted": True,
     }
+
+
+def _resume_incident_background(
+    *,
+    app: Any,
+    incident_id: str,
+    approved: bool,
+    channel: str,
+    slack_message_ts: str | None,
+) -> None:
+    try:
+        app.state.runtime.resume_incident(incident_id=incident_id, approved=approved)
+    except Exception as exc:
+        incident = app.state.runtime.get_incident(incident_id) or {"incident_id": incident_id}
+        anomaly = ((incident.get("anomalies") or [{}])[0]) if isinstance(incident, dict) else {}
+        app.state.slack_client.update_message(
+            channel=channel,
+            ts=slack_message_ts,
+            text=f"Incident `{incident_id}` failed while processing the Slack decision.",
+            blocks=app.state.slack_client.render_status_blocks(
+                incident_id=incident_id,
+                title="K8sWhisperer incident resume failed",
+                status="error",
+                anomaly_summary=anomaly.get("summary") if isinstance(anomaly, dict) else None,
+                diagnosis=incident.get("diagnosis") if isinstance(incident, dict) else None,
+                action=((incident.get("plan") or {}).get("action") if isinstance(incident, dict) else None),
+                result=f"Failed to resume incident after Slack decision: {exc}",
+                timeline=[
+                    "approval callback received from Slack",
+                    f"decision applied: {'approve' if approved else 'reject'}",
+                    "background resume failed",
+                ],
+            ),
+        )
 
 
 @router.post("/api/attest")

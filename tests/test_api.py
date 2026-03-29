@@ -335,6 +335,7 @@ def test_simulated_slack_workflow_end_to_end() -> None:
         )
 
         assert callback_response.status_code == 200
+        assert callback_response.json()["accepted"] is True
         final_incident = client.get(f"/api/incidents/{incident_id}")
         assert final_incident.status_code == 200
         final_payload = final_incident.json()
