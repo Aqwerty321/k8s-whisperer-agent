@@ -111,6 +111,32 @@ def test_slack_action_updates_existing_incident_message() -> None:
     client.app.state.slack_client.update_message.assert_called_once()
 
 
+def test_slack_action_is_idempotent_after_incident_completion() -> None:
+    payload = {
+        "channel": {"id": "C123"},
+        "actions": [{"action_id": "approve_incident", "value": json.dumps({"incident_id": "incident-complete-1"})}],
+    }
+    body = f"payload={quote_plus(json.dumps(payload))}".encode("utf-8")
+    headers = _signed_headers(body=body, secret="test-secret")
+
+    with TestClient(app) as client:
+        client.app.state.slack_client.signing_secret = "test-secret"
+        client.app.state.slack_client.update_message = Mock(return_value={"ok": True, "ts": "stub-complete-1"})
+        existing_incident = {
+            "incident_id": "incident-complete-1",
+            "awaiting_human": False,
+            "approved": True,
+            "status": "completed",
+            "slack_message_ts": "stub-complete-1",
+        }
+        client.app.state.runtime.get_incident = Mock(return_value=existing_incident)
+        response = client.post("/api/slack/actions", content=body, headers=headers)
+
+    assert response.status_code == 200
+    assert response.json()["duplicate"] is True
+    client.app.state.slack_client.update_message.assert_not_called()
+
+
 def test_incident_summary_endpoints_return_combined_views() -> None:
     with TestClient(app) as client:
         client.app.state.runtime._latest_states["incident-summary-1"] = {

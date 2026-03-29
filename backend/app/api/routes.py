@@ -179,6 +179,16 @@ async def slack_actions(request: Request) -> dict[str, Any]:
     incident_id = interaction["incident_id"]
     approved = interaction["approved"]
     existing = request.app.state.runtime.get_incident(incident_id)
+    if existing and not existing.get("awaiting_human", False) and existing.get("approved") is not None:
+        return {
+            "ok": True,
+            "incident_id": incident_id,
+            "approved": existing.get("approved"),
+            "duplicate": True,
+            "channel": interaction["channel"],
+            "result": existing,
+        }
+
     slack_message_ts = existing.get("slack_message_ts") if existing else None
     channel = interaction["channel"]
     existing_anomaly = ((existing or {}).get("anomalies") or [{}])[0]
