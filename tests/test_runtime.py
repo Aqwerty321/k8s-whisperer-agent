@@ -353,6 +353,26 @@ def test_runtime_routes_oomkill_to_hitl_recommendation(tmp_path) -> None:
     assert len(slack_client.messages) == 1
 
 
+def test_runtime_marks_rejected_hitl_incident_with_explicit_result(tmp_path) -> None:
+    settings = build_settings(tmp_path)
+    k8s_client = FakeK8sClient()
+    k8s_client.mode = "oomkill"
+    runtime = AgentRuntime(
+        settings=settings,
+        audit_logger=AuditLogger(settings.audit_log_path),
+        k8s_client=k8s_client,
+        llm_client=LLMClient(api_key=""),
+        slack_client=RecordingSlackClient(),
+    )
+
+    pending = runtime.run_once(namespace="default")
+    rejected = runtime.resume_incident(incident_id=pending["incident_id"], approved=False)
+
+    assert rejected["status"] == "completed"
+    assert rejected["approved"] is False
+    assert rejected["result"] == "Operator rejected remediation. No cluster mutation was executed."
+
+
 def test_runtime_pending_pod_recommendation_uses_scheduling_evidence(tmp_path) -> None:
     settings = build_settings(tmp_path)
     k8s_client = FakeK8sClient()

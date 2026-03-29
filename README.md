@@ -148,6 +148,11 @@ bash scripts/approve_incident.sh
 
 This simulates a signed Slack callback against the local backend for the newest pending incident and is intended only as a demo fallback if Slack or Cloudflare is unavailable.
 
+### Export the latest incident report
+```bash
+bash scripts/export_incident_report.sh
+```
+
 ## Core API Endpoints
 - `GET /health`
 - `GET /api/status`

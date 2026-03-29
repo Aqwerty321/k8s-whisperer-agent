@@ -115,6 +115,13 @@ bash scripts/approve_incident.sh
 
 This sends a signed Slack-style callback directly to the local backend on `127.0.0.1:8010` for the newest pending incident.
 
+## Export Incident Report
+To show a markdown-style postmortem for the latest incident:
+
+```bash
+bash scripts/export_incident_report.sh
+```
+
 ## Resetting OOMKilled Before A Demo
 If you already approved an OOMKilled fix and want to show that flow again:
 

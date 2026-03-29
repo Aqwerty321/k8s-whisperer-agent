@@ -157,6 +157,11 @@ def make_hitl_node(deps: AgentDependencies):
             "approved": approved,
             "awaiting_human": False,
             "slack_prompt_sent": True,
+            "result": (
+                state.get("result")
+                if approved
+                else "Operator rejected remediation. No cluster mutation was executed."
+            ),
         }
 
     return notify_human_node, hitl_node

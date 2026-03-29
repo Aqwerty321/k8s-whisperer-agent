@@ -179,6 +179,50 @@ def test_incident_summary_endpoints_return_combined_views() -> None:
     assert summary_response.json()["audit_count"] >= 1
 
 
+def test_incident_report_endpoint_returns_markdown() -> None:
+    with TestClient(app) as client:
+        client.app.state.runtime._latest_states["incident-report-1"] = {
+            "incident_id": "incident-report-1",
+            "status": "completed",
+            "namespace": "default",
+            "awaiting_human": False,
+            "approved": False,
+            "diagnosis": "Operator chose not to proceed.",
+            "result": "Operator rejected remediation. No cluster mutation was executed.",
+            "anomalies": [
+                {
+                    "anomaly_type": "OOMKilled",
+                    "resource_name": "demo-oomkill",
+                    "summary": "Container was OOMKilled after hitting memory limit",
+                }
+            ],
+            "plan": {
+                "action": "patch_pod",
+                "target_name": "demo-oomkill",
+                "blast_radius": "medium",
+                "requires_human": True,
+                "parameters": {"recommendation": "Increase memory."},
+            },
+        }
+        client.app.state.audit_logger.log(
+            {
+                "incident_id": "incident-report-1",
+                "timestamp": "2026-03-29T00:00:00Z",
+                "decision": "rejected",
+                "action": "patch_pod",
+                "result": "Operator rejected remediation. No cluster mutation was executed.",
+            }
+        )
+
+        response = client.get("/api/incidents/incident-report-1/report")
+
+    assert response.status_code == 200
+    assert response.headers["content-type"].startswith("text/plain")
+    assert "# Incident Report: incident-report-1" in response.text
+    assert "## Result" in response.text
+    assert "Operator rejected remediation" in response.text
+
+
 def test_incident_list_supports_filters() -> None:
     with TestClient(app) as client:
         client.app.state.runtime._latest_states["incident-filter-1"] = {

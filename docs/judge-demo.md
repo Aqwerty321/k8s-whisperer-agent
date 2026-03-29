@@ -23,6 +23,7 @@
 3. Audit proof
    Run `curl -sS http://127.0.0.1:8010/api/audit | jq`
    Point out the explanation, decision, and result trail.
+   If useful, run `bash scripts/export_incident_report.sh` for a compact markdown report.
 
 4. PendingPod recommendation-only path
    Run `bash scripts/demo_incident.sh pending | jq`

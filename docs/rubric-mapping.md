@@ -14,6 +14,7 @@
 - low-blast-radius actions can be auto-approved
 - medium/high-risk actions pause for human approval
 - every incident produces an explanation and audit record
+- every incident can also be exported as a compact markdown report for review
 - public ingress is restricted to health and Slack callback only
 - fallback local approval path exists if Slack or Cloudflare fails
 

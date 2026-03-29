@@ -5,6 +5,7 @@ from typing import Any
 
 from fastapi import APIRouter, HTTPException, Request
 from fastapi import Query
+from fastapi.responses import PlainTextResponse
 from pydantic import BaseModel, Field
 
 from ..attestation import StellarAttestor, hash_incident_record
@@ -98,6 +99,16 @@ async def get_incident_summary(incident_id: str, request: Request) -> dict[str, 
         "audit_count": len(audit_entries),
         "latest_audit": audit_entries[-1] if audit_entries else None,
     }
+
+
+@router.get("/api/incidents/{incident_id}/report", response_class=PlainTextResponse)
+async def get_incident_report(incident_id: str, request: Request) -> str:
+    incident = request.app.state.runtime.get_incident(incident_id)
+    if incident is None:
+        raise HTTPException(status_code=404, detail="Incident not found.")
+
+    audit_entries = request.app.state.audit_logger.read_incident(incident_id)
+    return _render_incident_report(incident=incident, audit_entries=audit_entries)
 
 
 @router.get("/api/audit")
@@ -291,3 +302,50 @@ def _summarize_incident(incident: dict[str, Any]) -> dict[str, Any]:
         "slack_message_ts": incident.get("slack_message_ts"),
         "result": incident.get("result"),
     }
+
+
+def _render_incident_report(*, incident: dict[str, Any], audit_entries: list[dict[str, Any]]) -> str:
+    summary = _summarize_incident(incident)
+    anomalies = incident.get("anomalies") or []
+    first_anomaly = anomalies[0] if anomalies else {}
+    plan = incident.get("plan") or {}
+    recommendation = (plan.get("parameters") or {}).get("recommendation") if isinstance(plan.get("parameters"), dict) else None
+
+    lines = [
+        f"# Incident Report: {summary.get('incident_id')}",
+        "",
+        f"- Status: {summary.get('status')}",
+        f"- Namespace: {summary.get('namespace')}",
+        f"- Anomaly: {summary.get('anomaly_type') or 'Unknown'}",
+        f"- Resource: {summary.get('resource_name') or 'Unknown'}",
+        f"- Action: {summary.get('plan_action') or 'none'}",
+        f"- Approved: {summary.get('approved')}",
+        "",
+        "## Summary",
+        str(first_anomaly.get("summary") or "No summary recorded."),
+        "",
+        "## Diagnosis",
+        str(incident.get("diagnosis") or "No diagnosis recorded."),
+        "",
+        "## Plan",
+        f"- Target: {plan.get('target_name') or 'unknown'}",
+        f"- Blast Radius: {plan.get('blast_radius') or 'unknown'}",
+        f"- Requires Human: {plan.get('requires_human')}",
+    ]
+    if recommendation:
+        lines.extend([f"- Recommendation: {recommendation}"])
+    lines.extend([
+        "",
+        "## Result",
+        str(incident.get("result") or "No result recorded."),
+        "",
+        "## Audit Entries",
+    ])
+    if audit_entries:
+        for entry in audit_entries:
+            lines.append(
+                f"- {entry.get('timestamp')}: decision={entry.get('decision')} action={entry.get('action')} result={entry.get('result')}"
+            )
+    else:
+        lines.append("- No audit entries recorded.")
+    return "\n".join(lines)

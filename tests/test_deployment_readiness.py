@@ -144,3 +144,10 @@ def test_demo_reset_oomkill_script_restores_failing_memory_limit() -> None:
     assert 'kubectl patch deployment demo-oomkill' in script
     assert '"64Mi"' in script
     assert '"32Mi"' in script
+
+
+def test_export_incident_report_script_uses_report_endpoint() -> None:
+    script = Path("scripts/export_incident_report.sh").read_text(encoding="utf-8")
+
+    assert "/api/incidents/${INCIDENT_ID}/report" in script
+    assert "limit=1" in script
