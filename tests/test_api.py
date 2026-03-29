@@ -297,6 +297,43 @@ def test_demo_prune_endpoint_trims_runtime_and_audit_state() -> None:
     assert response.json()["audit"]["kept"] == 2
 
 
+def test_demo_reset_endpoint_clears_runtime_and_audit_state() -> None:
+    with TestClient(app) as client:
+        client.app.state.runtime._latest_states["incident-reset-1"] = {
+            "incident_id": "incident-reset-1",
+            "status": "awaiting_human",
+            "created_at": "2026-03-29T00:00:00Z",
+            "updated_at": "2026-03-29T00:00:00Z",
+            "awaiting_human": True,
+        }
+        client.app.state.runtime._pending_incidents.add("incident-reset-1")
+        client.app.state.runtime.checkpointer.put(
+            {"configurable": {"thread_id": "incident-reset-1", "checkpoint_ns": ""}},
+            {"id": "checkpoint-reset-1", "channel_values": {}, "channel_versions": {}, "versions_seen": {}, "pending_sends": []},
+            {},
+            {},
+        )
+        client.app.state.audit_logger.log(
+            {
+                "incident_id": "incident-reset-1",
+                "timestamp": "2026-03-29T00:00:00Z",
+                "decision": "approved",
+                "action": "patch_pod",
+                "result": "ok",
+            }
+        )
+
+        response = client.post("/api/demo/reset", json={"clear_audit": True})
+
+    assert response.status_code == 200
+    assert response.json()["cleared_incidents"] >= 1
+    assert response.json()["cleared_pending_incidents"] >= 1
+    assert response.json()["cleared_checkpoints"] >= 1
+    assert response.json()["audit"]["kept"] == 0
+    assert app.state.runtime.get_status()["latest_incidents"] == []
+    assert app.state.audit_logger.read_all() == []
+
+
 def test_simulated_slack_workflow_end_to_end() -> None:
     with TestClient(app) as client:
         client.app.state.slack_client.signing_secret = "test-secret"

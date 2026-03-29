@@ -241,6 +241,21 @@ class AgentRuntime:
             "removed_incidents": len(remove_ids),
         }
 
+    def reset_runtime_state(self) -> dict[str, int]:
+        with self._lock:
+            incident_count = len(self._latest_states)
+            pending_count = len(self._pending_incidents)
+            self._latest_states.clear()
+            self._pending_incidents.clear()
+        checkpoint_count = len(self.checkpointer.list_threads())
+        self.checkpointer.reset()
+        self.incident_tracker.reset()
+        return {
+            "cleared_incidents": incident_count,
+            "cleared_pending_incidents": pending_count,
+            "cleared_checkpoints": checkpoint_count,
+        }
+
 
 def _interrupt_slack_message_ts(interrupts: list[Any]) -> str | None:
     for interrupt in interrupts:

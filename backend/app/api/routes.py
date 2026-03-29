@@ -31,6 +31,10 @@ class PruneDemoRequest(BaseModel):
     keep_audit_entries: int = Field(default=5, ge=0, le=200)
 
 
+class ResetDemoRequest(BaseModel):
+    clear_audit: bool = True
+
+
 router = APIRouter()
 
 
@@ -196,6 +200,16 @@ async def toggle_poller(payload: PollerToggleRequest, request: Request) -> dict[
 async def prune_demo_state(payload: PruneDemoRequest, request: Request) -> dict[str, Any]:
     runtime_result = request.app.state.runtime.prune_runtime_state(keep_incidents=payload.keep_incidents)
     audit_result = request.app.state.audit_logger.prune_recent(payload.keep_audit_entries)
+    return {
+        **runtime_result,
+        "audit": audit_result,
+    }
+
+
+@router.post("/api/demo/reset")
+async def reset_demo_state(payload: ResetDemoRequest, request: Request) -> dict[str, Any]:
+    runtime_result = request.app.state.runtime.reset_runtime_state()
+    audit_result = request.app.state.audit_logger.prune_recent(0) if payload.clear_audit else {"kept": 0, "removed": 0}
     return {
         **runtime_result,
         "audit": audit_result,

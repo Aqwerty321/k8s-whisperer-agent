@@ -43,6 +43,14 @@ class PersistentInMemorySaver(InMemorySaver):
         with self._lock:
             return sorted(self.storage.keys())
 
+    def reset(self) -> None:
+        with self._lock:
+            self.storage.clear()
+            self.writes.clear()
+            self.blobs.clear()
+            if self.path.exists():
+                self.path.unlink()
+
     def _load_from_disk(self) -> None:
         if not self.path.exists():
             return

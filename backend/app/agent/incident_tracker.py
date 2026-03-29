@@ -96,6 +96,10 @@ class IncidentTracker:
                 for signature, record in self._records.items()
             }
 
+    def reset(self) -> None:
+        with self._lock:
+            self._records.clear()
+
     def _prune_locked(self, now: float) -> None:
         for signature in list(self._records.keys()):
             record = self._records[signature]
