@@ -28,6 +28,8 @@ bash scripts/setup_minikube.sh
 bash scripts/deploy_demo.sh
 ```
 
+`deploy_demo.sh` resets the crashloop demo state so the first pod starts unhealthy and the auto-remediation path has something real to fix.
+
 ## Seed Walkthrough Incidents
 
 ### CrashLoopBackOff auto-remediation

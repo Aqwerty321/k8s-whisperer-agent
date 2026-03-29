@@ -7,6 +7,8 @@ metadata:
     app: demo-crashloop
 spec:
   replicas: 1
+  strategy:
+    type: Recreate
   selector:
     matchLabels:
       app: demo-crashloop
@@ -18,4 +20,23 @@ spec:
       containers:
         - name: demo
           image: busybox:1.36
-          command: ["/bin/sh", "-c", "echo crash && sleep 2 && exit 1"]
+          command:
+            - /bin/sh
+            - -c
+            - |
+              if [ -f /state/last_pod ] && [ "$(cat /state/last_pod)" != "$HOSTNAME" ]; then
+                echo recovered after pod replacement
+                sleep 3600
+              fi
+              echo "$HOSTNAME" > /state/last_pod
+              echo crash
+              sleep 2
+              exit 1
+          volumeMounts:
+            - name: crashloop-state
+              mountPath: /state
+      volumes:
+        - name: crashloop-state
+          hostPath:
+            path: /tmp/k8s-whisperer-demo-crashloop
+            type: DirectoryOrCreate

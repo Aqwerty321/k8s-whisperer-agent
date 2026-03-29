@@ -40,3 +40,19 @@ def test_deploy_backend_script_forces_rollout_restart() -> None:
     script = Path("scripts/deploy_backend.sh").read_text(encoding="utf-8")
 
     assert "kubectl rollout restart deployment/k8s-whisperer -n default" in script
+
+
+def test_crashloop_demo_uses_replacement_state_marker() -> None:
+    manifest = Path("k8s/demo/crashloop.yaml").read_text(encoding="utf-8")
+
+    assert "kind: Deployment" in manifest
+    assert "type: Recreate" in manifest
+    assert "/tmp/k8s-whisperer-demo-crashloop" in manifest
+    assert "recovered after pod replacement" in manifest
+
+
+def test_deploy_demo_resets_crashloop_state() -> None:
+    script = Path("scripts/deploy_demo.sh").read_text(encoding="utf-8")
+
+    assert "minikube ssh -- \"sudo rm -rf /tmp/k8s-whisperer-demo-crashloop && sudo mkdir -p /tmp/k8s-whisperer-demo-crashloop\"" in script
+    assert "kubectl delete deployment demo-crashloop -n default --ignore-not-found" in script
