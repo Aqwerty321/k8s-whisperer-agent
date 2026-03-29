@@ -3,7 +3,7 @@ PIP := .venv/bin/pip
 PYTEST := .venv/bin/pytest
 UVICORN := .venv/bin/uvicorn
 
-.PHONY: venv install test run lint demo-setup demo-deploy tunnel poll-once docker-build deploy-backend public-bridge
+.PHONY: venv install test run lint demo-setup demo-deploy demo-reset demo-ready tunnel poll-once docker-build deploy-backend public-bridge
 
 venv:
 	python3 -m venv .venv
@@ -23,6 +23,12 @@ demo-setup:
 demo-deploy:
 	bash scripts/deploy_demo.sh
 
+demo-reset:
+	bash scripts/demo_reset.sh
+
+demo-ready:
+	bash scripts/demo_ready.sh
+
 docker-build:
 	docker build -t k8s-whisperer:dev .
 
@@ -36,14 +42,4 @@ tunnel:
 	bash scripts/tunnel.sh
 
 poll-once:
-	.venv/bin/python - <<'PY'
-import json
-import urllib.request
-
-request = urllib.request.Request(
-    "http://localhost:8000/api/poller/run-once",
-    method="POST",
-)
-with urllib.request.urlopen(request) as response:
-    print(json.dumps(json.loads(response.read().decode("utf-8")), indent=2))
-PY
+	$(PYTHON) -c "import json, urllib.request; request = urllib.request.Request('http://localhost:8000/api/poller/run-once', method='POST'); response = urllib.request.urlopen(request); print(json.dumps(json.loads(response.read().decode('utf-8')), indent=2))"

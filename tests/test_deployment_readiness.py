@@ -56,3 +56,28 @@ def test_deploy_demo_resets_crashloop_state() -> None:
 
     assert "minikube ssh -- \"sudo rm -rf /tmp/k8s-whisperer-demo-crashloop && sudo mkdir -p /tmp/k8s-whisperer-demo-crashloop\"" in script
     assert "kubectl delete deployment demo-crashloop -n default --ignore-not-found" in script
+
+
+def test_backend_manifest_uses_persistent_runtime_volume_and_tuned_probes() -> None:
+    manifest = Path("k8s/backend.yaml").read_text(encoding="utf-8")
+
+    assert "kind: PersistentVolumeClaim" in manifest
+    assert "name: k8s-whisperer-runtime" in manifest
+    assert "persistentVolumeClaim:" in manifest
+    assert "timeoutSeconds: 3" in manifest
+    assert "failureThreshold: 6" in manifest
+
+
+def test_makefile_includes_demo_reset_and_ready_targets() -> None:
+    makefile = Path("Makefile").read_text(encoding="utf-8")
+
+    assert "demo-reset:" in makefile
+    assert "demo-ready:" in makefile
+
+
+def test_demo_reset_script_clears_runtime_files() -> None:
+    script = Path("scripts/demo_reset.sh").read_text(encoding="utf-8")
+
+    assert "langgraph-checkpoints.pkl" in script
+    assert "audit.jsonl" in script
+    assert "kubectl rollout restart deployment/k8s-whisperer -n default" in script

@@ -30,6 +30,13 @@ bash scripts/deploy_demo.sh
 
 `deploy_demo.sh` resets the crashloop demo state so the first pod starts unhealthy and the auto-remediation path has something real to fix.
 
+### 4. Reset to a clean judge-ready state
+```bash
+make demo-reset
+```
+
+This clears persisted runtime state in the backend pod, redeploys the demo workloads, and gives you a clean incident/audit slate.
+
 ## Seed Walkthrough Incidents
 
 ### CrashLoopBackOff auto-remediation
@@ -93,10 +100,19 @@ curl -sS 'http://localhost:8010/api/audit?search=oomkill' | jq
 ## Live Slack Approval
 When using a real Slack callback URL:
 1. Trigger the OOMKilled scenario.
-2. Wait for the approval message in `#alert`.
+2. Wait for the approval message in `#alerts`.
 3. Click `Approve` or `Reject`.
 4. Verify the incident transitions from `awaiting_human` to `completed`.
 5. Check the audit endpoint for the final record.
+
+## Judge Flow
+1. Run `make demo-ready`.
+2. Show `curl -sS http://127.0.0.1:8010/health`.
+3. Run `bash scripts/demo_incident.sh crashloop | jq` and show the completed restart outcome.
+4. Run `bash scripts/demo_incident.sh oomkill | jq`, open Slack, and approve the newest card.
+5. Show `curl -sS http://127.0.0.1:8010/api/incidents | jq`.
+6. Show `curl -sS http://127.0.0.1:8010/api/audit | jq`.
+7. Run `bash scripts/demo_incident.sh pending | jq` and explain the recommendation-only safety path.
 
 ## If Something Breaks
 - Check API health: `curl http://localhost:8010/health`

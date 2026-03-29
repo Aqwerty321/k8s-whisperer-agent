@@ -121,6 +121,16 @@ make public-bridge
 
 This keeps Cloudflare pointed at local port `8010`, but serves that port from `svc/k8s-whisperer` via `kubectl port-forward`.
 
+### Reset the demo state
+```bash
+make demo-reset
+```
+
+### Fully prepare the demo environment
+```bash
+make demo-ready
+```
+
 ## Core API Endpoints
 - `GET /health`
 - `GET /api/status`
