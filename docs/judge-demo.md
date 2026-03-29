@@ -20,6 +20,7 @@
    Run `bash scripts/demo_incident.sh oomkill | jq`
    Switch to Slack and click `Approve` on the newest card.
    Explain that the public callback resumes the paused LangGraph thread.
+   Explain that the default strict profile records a recommendation-only result instead of mutating the Deployment in-place.
 
 3. Audit proof
    Run `curl -sS http://127.0.0.1:8010/api/audit | jq`
@@ -33,6 +34,7 @@
 
 ## Backup Path
 - If Slack or Cloudflare misbehaves, keep the incident visible in `/api/incidents`
+- If the backend is in-cluster and `127.0.0.1:8010` is not already bridged locally, start `make public-bridge`
 - Run `bash scripts/approve_incident.sh`
 - Use the audit output and runtime state to show the same resume path locally
 - Do not improvise new features during the demo

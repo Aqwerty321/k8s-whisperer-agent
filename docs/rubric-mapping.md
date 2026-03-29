@@ -7,7 +7,7 @@
 ## Technical Depth
 - FastAPI backend with LangGraph orchestration
 - persistent checkpointing for paused/resumed incident threads
-- namespace-scoped Kubernetes integration with pod-level RBAC
+- tightly scoped Kubernetes integration with namespace-scoped pod writes and read-only node access
 - Slack interactive approval callbacks with signed request verification
 
 ## Safety And Reliability
@@ -15,6 +15,7 @@
 - medium/high-risk actions pause for human approval
 - every incident produces an explanation and audit record
 - every incident can also be exported as a compact markdown report for review
+- the default `OOMKilled` flow remains recommendation-only unless workload patching is explicitly enabled
 - public ingress is restricted to health and Slack callback only
 - fallback local approval path exists if Slack or Cloudflare fails
 

@@ -14,7 +14,7 @@ The scaffold follows the PS1 control loop directly:
 ## Runtime Shape
 - FastAPI hosts the health endpoint, incident endpoints, Slack callback webhook, and optional attestation endpoint.
 - LangGraph owns the workflow state and pause/resume behavior.
-- Slack button clicks resume a paused graph run using the `incident_id` as the LangGraph thread ID.
+- Slack button clicks are acknowledged immediately and resume a paused graph run in the background using the `incident_id` as the LangGraph thread ID.
 - The audit log persists every completed incident locally as JSON Lines.
 - LangGraph checkpoints are persisted to a local file-backed saver so pending approvals survive process restarts.
 
@@ -28,25 +28,32 @@ The scaffold follows the PS1 control loop directly:
 - `backend/app/attestation/*`: optional Stellar bonus path, isolated from the core flow
 
 ## First Implemented Live Path
-- Observe collects pod summaries and events.
+- Observe collects pod summaries, node summaries, and namespace events.
 - Detect converts restart-heavy pods and matching events into `CrashLoopBackOff` anomalies.
 - Diagnose collects logs and describe-style context.
 - Plan chooses `restart_pod` for the first-pass safe remediation.
 - Safety auto-approves only when confidence and blast radius allow it.
-- Execute deletes the pod and then verifies it returns to a healthy running state.
+- Execute deletes the pod and then verifies that the pod, or a healthy replacement from the same Deployment, returns to a healthy running state.
 - Explain and log emits a human-readable summary and appends the audit entry.
 
 ## First Implemented HITL Path
 - `OOMKilled` is detected from container termination state and related events.
 - Diagnose gathers logs and describe-style pod context.
-- Plan produces a concrete recommendation to raise memory by roughly 50 percent and then restart the workload.
+- Plan produces a concrete recommendation to raise memory by roughly 50 percent on the owning workload.
+- In the default strict profile, approval records the recommendation but does not patch the workload automatically.
 - Safety routes the plan to HITL because the blast radius is not low.
-- Slack approval pauses the graph until the callback resumes the exact graph thread.
+- Slack approval pauses the graph until the callback acknowledges and resumes the exact graph thread in the background.
 
 ## Improved Pending Path
 - `PendingPod` uses `FailedScheduling` events and pod status context together.
+- Detection only triggers once the pod has remained pending for at least five minutes.
 - The evidence is merged into the anomaly record rather than being lost between nodes.
 - The plan now gives a concrete operator recommendation based on the scheduling reason, such as insufficient memory, CPU pressure, selectors, or taints.
+
+## Read-Only Node Path
+- `NodeNotReady` is detected from the observed node snapshot when the `Ready` condition is `False`.
+- Diagnose uses serialized node condition evidence instead of pod logs.
+- Plan is escalation-only and never mutates nodes.
 
 ## Deduplication
 - Background polling uses a runtime incident tracker to suppress repeated detections for the same anomaly signature.
@@ -71,8 +78,8 @@ The scaffold follows the PS1 control loop directly:
 ## HITL Mechanics
 - `hitl` sends an interactive Slack approval request.
 - The graph pauses via `interrupt()`.
-- FastAPI validates the Slack signature, parses the interactive payload, extracts `incident_id`, and resumes the exact graph thread.
-- FastAPI also updates the Slack incident message immediately when the approval decision arrives.
+- FastAPI validates the Slack signature, parses the interactive payload, updates the Slack incident message immediately, and returns an acknowledgment to Slack.
+- The actual `resume_incident` call runs in the background using the same `incident_id` to thread mapping.
 - The runtime can recover pending incidents from the persisted checkpoint store even after a process restart.
 - Slack message timestamps are carried in graph state so follow-up updates can target the same incident message when available.
 
@@ -93,4 +100,5 @@ The scaffold follows the PS1 control loop directly:
 - Auto-remediation only for low blast-radius, above-threshold plans.
 - Destructive actions are denylisted by default.
 - Human approval is explicit and resumes the graph instead of bypassing it.
+- Pod writes remain namespace-scoped, while node access is read-only.
 - Blockchain is not part of the live remediation loop.

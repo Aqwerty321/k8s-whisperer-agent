@@ -58,6 +58,7 @@ Expected outcome:
 - incident status `awaiting_human`
 - plan action `patch_pod`
 - recommendation to increase memory on the owning workload
+- approving in the default strict profile records the recommendation but does not patch the Deployment automatically
 - Slack approval request sent if live Slack is configured
 
 ### PendingPod operator guidance
@@ -102,7 +103,7 @@ When using a real Slack callback URL:
 1. Trigger the OOMKilled scenario.
 2. Wait for the approval message in `#alerts`.
 3. Click `Approve` or `Reject`.
-4. Verify the incident transitions from `awaiting_human` to `completed`.
+4. Verify the incident transitions from `awaiting_human` to `completed` after the background resume finishes.
 5. Check the audit endpoint for the final record.
 
 ## Backup Local Approval
@@ -114,6 +115,8 @@ bash scripts/approve_incident.sh
 ```
 
 This sends a signed Slack-style callback directly to the local backend on `127.0.0.1:8010` for the newest pending incident.
+
+If the backend is running in minikube without a local listener on `127.0.0.1:8010`, start `make public-bridge` first or use a temporary `kubectl port-forward svc/k8s-whisperer 8010:8010 -n default`.
 
 ## Export Incident Report
 To show a markdown-style postmortem for the latest incident:

@@ -7,20 +7,21 @@ K8sWhisperer is an autonomous Kubernetes incident response scaffold for PS1 of t
 - LangGraph workflow for Observe -> Detect -> Diagnose -> Plan -> Safety Gate -> Execute -> Explain/Log
 - Typed shared state model
 - Slack Web API integration and inbound webhook signature verification
-- Kubernetes client wrappers with pod-focused operations
+- Kubernetes client wrappers with pod-focused operations and read-only node observation
 - Append-only JSON Lines audit logging
 - Disk-backed LangGraph checkpoint persistence for HITL resume across process restarts
 - MCP servers for Kubernetes and Slack tools
-- Namespace-scoped RBAC and demo manifests for `CrashLoopBackOff`, `OOMKilled`, and `Pending Pod`
+- Tightly scoped RBAC with namespace-scoped pod writes, read-only node access, and demo manifests for `CrashLoopBackOff`, `OOMKilled`, and `Pending Pod`
 - Optional isolated Stellar bonus scaffold with backend attestation helpers, a Soroban contract skeleton, and a minimal frontend
 
 ## Implemented First-Pass Demo Path
 - Real first-pass `CrashLoopBackOff` detection from pod restart counts and event signals
 - Real first-pass remediation plan: restart the pod by delete request when the action is low blast-radius and above threshold
 - Post-action verification loop that waits for the pod to return to a healthy running state
-- Real first-pass `OOMKilled` path that generates a concrete HITL recommendation to raise memory and then restart the workload
-- Stronger `PendingPod` reasoning that turns scheduling-event evidence into a concrete operator recommendation
-- Slack approval flow that pauses the graph and resumes it through the FastAPI webhook
+- Real first-pass `OOMKilled` path that generates a concrete HITL recommendation to raise memory on the owning workload; the default strict profile keeps that change recommendation-only
+- Stronger `PendingPod` reasoning that turns scheduling-event evidence into a concrete operator recommendation only after the pod has remained pending for at least five minutes
+- Read-only `NodeNotReady` detection that escalates with node evidence and never mutates nodes
+- Slack approval flow that pauses the graph, acknowledges the callback immediately, and resumes it through the FastAPI webhook in the background
 - Slack incident messages now carry message correlation so follow-up explanations can update the same message when possible
 - Slack approval callbacks now update the tracked incident message immediately on approve or reject
 - Slack incident messages now use richer status blocks with summary, action, result, and timeline context
@@ -101,7 +102,7 @@ make docker-build
 make deploy-backend
 ```
 
-This uses the existing namespace-scoped RBAC and deploys the backend as `Deployment/k8s-whisperer` with `Service/k8s-whisperer` on port `8010`.
+This uses the existing tightly scoped RBAC and deploys the backend as `Deployment/k8s-whisperer` with `Service/k8s-whisperer` on port `8010`.
 
 If you need live Slack or Gemini credentials in-cluster, create a secret first:
 
@@ -153,6 +154,8 @@ bash scripts/approve_incident.sh
 
 This simulates a signed Slack callback against the local backend for the newest pending incident and is intended only as a demo fallback if Slack or Cloudflare is unavailable.
 
+If you are running the API through `make run` or default `uvicorn` on port `8000`, invoke it as `BASE_URL=http://127.0.0.1:8000 bash scripts/approve_incident.sh`.
+
 ### Export the latest incident report
 ```bash
 bash scripts/export_incident_report.sh
@@ -190,17 +193,13 @@ bash scripts/export_incident_report.sh
 - Full operator runbook: `docs/demo-runbook.md`
 
 ## Slack Workflow Status
-- The repo now includes an automated end-to-end simulated Slack workflow test covering:
-  - incident creation
-  - HITL pause
-  - webhook callback approval
-  - graph resume
-  - final audit entry
-- Remaining work for a real live Slack end-to-end run is operational rather than architectural:
-  - configure the Slack app interactive callback URL to the public FastAPI endpoint
-  - supply live bot token and signing secret
-  - confirm the bot is invited to the target channel
-  - optionally replace stubbed message behavior with richer Block Kit message updates
+- The repo includes an automated end-to-end simulated Slack workflow test covering incident creation, HITL pause, webhook callback approval, graph resume, and final audit entry.
+- A signed local callback helper at `scripts/approve_incident.sh` exercises the same callback and resume path against the deployed backend for rehearsal and fallback demos.
+- The Slack callback endpoint now acknowledges immediately and resumes the incident in the background so slower execution paths do not hold the webhook open.
+- Real live Slack still depends on operational setup rather than missing backend pieces:
+- configure the Slack app interactive callback URL to the public FastAPI endpoint
+- supply live bot token and signing secret
+- confirm the bot is invited to the target channel
 
 ## Useful Make Targets
 - `make install`
@@ -252,4 +251,4 @@ This prevents the blockchain bonus from becoming a control-path dependency.
 - `Pending Pod` now has a better recommendation path, but still does not mutate cluster resources automatically.
 - Workload ownership is inferred only from pod owner references in the current namespace-scoped view; full owner-chain resolution is not implemented yet.
 - Audit history is exposed through simple file-backed read endpoints, not a database-backed query service.
-- Live Slack E2E still depends on real workspace credentials and a reachable callback URL, although the full backend path is now simulation-tested.
+- Live Slack E2E still depends on real workspace credentials and a reachable callback URL, although the same callback and resume path is now covered by automated tests and signed local rehearsal.

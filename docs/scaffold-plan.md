@@ -4,7 +4,7 @@
 - This document captures the agreed scaffold plan before implementation.
 - The goal is to preserve the build shape and decisions in-repo so future work can resume without relying on chat history.
 - Current focus: build a runnable core scaffold for PS1 first, while keeping the optional Stellar bonus isolated.
-- Progress update: the scaffold has now been implemented, including file-backed graph checkpoints, a first-pass live `CrashLoopBackOff` remediation path, and a tested Slack callback resume flow.
+- Progress update: the scaffold has now been implemented, including file-backed graph checkpoints, live `CrashLoopBackOff` remediation, a strict `OOMKilled` recommendation path, five-minute `PendingPod` gating, and a tested Slack callback resume flow.
 
 ## Fixed Constraints
 - Development environment: WSL2
@@ -16,7 +16,7 @@
 - Slack inbound approvals: FastAPI webhook endpoints
 - Public callback tunnel: one simple tunnel only, prefer `cloudflared`
 - Demo cluster: `minikube`
-- Kubernetes access: tightly scoped pod-level RBAC only
+- Kubernetes access: tightly scoped pod writes plus read-only node access
 - Prometheus: optional and non-blocking
 - Optional blockchain bonus: Stellar only, isolated from the remediation control loop
 
@@ -171,9 +171,9 @@ explain_log -> observe
 ## Node Responsibilities
 
 ### `observe_node`
-- Collect cluster events, pod summaries, and lightweight workload context.
+- Collect cluster events, pod summaries, node summaries, and lightweight workload context.
 - Normalize data into shared state.
-- Keep first implementation simple and namespace-scoped.
+- Keep first implementation simple: namespace-scoped pod operations with read-only node observation.
 
 ### `detect_node`
 - Convert observed signals into typed anomalies.
@@ -230,7 +230,7 @@ explain_log -> observe
   - describe-equivalent summary fetch
   - delete pod
   - patch targeted pod or workload fields only where explicitly allowed
-- RBAC remains namespace-scoped and pod-focused.
+- RBAC keeps pod writes namespace-scoped and adds cluster-scoped read-only node observation.
 
 ## MCP Plan
 - Add proper MCP server modules for `kubectl` and Slack to satisfy the rubric expectation.
@@ -325,6 +325,7 @@ Planned scope:
 - pods: `get`, `list`, `watch`, `delete`, and only narrowly justified patch support
 - pods/log: `get`
 - events: `get`, `list`, `watch`
+- nodes: `get`, `list`, `watch` through a read-only `ClusterRole`
 
 Explicit non-goals for first pass:
 - no cluster-admin
