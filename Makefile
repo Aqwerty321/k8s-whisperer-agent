@@ -3,7 +3,7 @@ PIP := .venv/bin/pip
 PYTEST := .venv/bin/pytest
 UVICORN := .venv/bin/uvicorn
 
-.PHONY: venv install test run lint demo-setup demo-deploy tunnel poll-once
+.PHONY: venv install test run lint demo-setup demo-deploy tunnel poll-once docker-build deploy-backend
 
 venv:
 	python3 -m venv .venv
@@ -22,6 +22,12 @@ demo-setup:
 
 demo-deploy:
 	bash scripts/deploy_demo.sh
+
+docker-build:
+	docker build -t k8s-whisperer:dev .
+
+deploy-backend:
+	bash scripts/deploy_backend.sh
 
 tunnel:
 	bash scripts/tunnel.sh

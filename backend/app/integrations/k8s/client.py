@@ -18,7 +18,10 @@ class K8sClient:
             from kubernetes import client, config
 
             if self.kubeconfig:
-                config.load_kube_config(config_file=self.kubeconfig)
+                try:
+                    config.load_kube_config(config_file=self.kubeconfig)
+                except Exception:
+                    config.load_incluster_config()
             else:
                 try:
                     config.load_kube_config()

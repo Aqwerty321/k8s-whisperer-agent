@@ -1,0 +1,17 @@
+.git
+.github
+.venv
+__pycache__
+*.pyc
+*.pyo
+.pytest_cache
+.mypy_cache
+.env
+audit_log
+data
+deploy/cloudflared/config.yml
+frontend/node_modules
+frontend/dist
+dist
+build
+target

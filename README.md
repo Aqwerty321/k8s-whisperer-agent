@@ -89,6 +89,29 @@ For a stable custom-domain setup, use the named tunnel workflow documented in `d
 make test
 ```
 
+## Containerized Backend
+
+### Build the API image locally
+```bash
+make docker-build
+```
+
+### Build and deploy into minikube
+```bash
+make deploy-backend
+```
+
+This uses the existing namespace-scoped RBAC and deploys the backend as `Deployment/k8s-whisperer` with `Service/k8s-whisperer` on port `8010`.
+
+If you need live Slack or Gemini credentials in-cluster, create a secret first:
+
+```bash
+kubectl create secret generic k8s-whisperer-secrets \
+  --from-literal=slack_bot_token="$SLACK_BOT_TOKEN" \
+  --from-literal=slack_signing_secret="$SLACK_SIGNING_SECRET" \
+  --from-literal=gemini_api_key="$GEMINI_API_KEY"
+```
+
 ## Core API Endpoints
 - `GET /health`
 - `GET /api/status`

@@ -9,9 +9,18 @@ This runbook keeps the demo sequence short, repeatable, and easy to recover duri
 .venv/bin/uvicorn backend.main:app --host 0.0.0.0 --port 8010
 ```
 
+Or run the backend inside minikube:
+
+```bash
+make deploy-backend
+kubectl port-forward svc/k8s-whisperer 8010:8010
+```
+
 ### 2. Optionally expose a public callback URL
 - Temporary: `bash scripts/tunnel.sh`
 - Stable domain: follow `docs/stable-domain-tunnel.md`
+
+If the backend runs in minikube, keep the tunnel pointed at the local forwarded port.
 
 ### 3. Start or seed the demo cluster
 ```bash

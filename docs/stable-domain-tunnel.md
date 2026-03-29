@@ -67,6 +67,12 @@ ingress:
 .venv/bin/uvicorn backend.main:app --host 0.0.0.0 --port 8010
 ```
 
+If the backend runs in minikube instead, port-forward it locally before starting the tunnel:
+
+```bash
+kubectl port-forward svc/k8s-whisperer 8010:8010
+```
+
 ### 6. Run the named tunnel
 ```bash
 cloudflared tunnel --config deploy/cloudflared/config.yml run k8swhisperer

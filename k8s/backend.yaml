@@ -1,0 +1,88 @@
+apiVersion: v1
+kind: Service
+metadata:
+  name: k8s-whisperer
+  namespace: default
+spec:
+  selector:
+    app: k8s-whisperer
+  ports:
+    - name: http
+      port: 8010
+      targetPort: 8010
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: k8s-whisperer
+  namespace: default
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: k8s-whisperer
+  template:
+    metadata:
+      labels:
+        app: k8s-whisperer
+    spec:
+      serviceAccountName: k8s-whisperer-sa
+      containers:
+        - name: api
+          image: k8s-whisperer:dev
+          imagePullPolicy: IfNotPresent
+          ports:
+            - containerPort: 8010
+          env:
+            - name: APP_ENV
+              value: dev
+            - name: PORT
+              value: "8010"
+            - name: K8S_NAMESPACE
+              valueFrom:
+                fieldRef:
+                  fieldPath: metadata.namespace
+            - name: PUBLIC_BASE_URL
+              value: https://slack.aqwerty321.me
+            - name: ENABLE_BACKGROUND_POLLING
+              value: "false"
+            - name: AUDIT_LOG_PATH
+              value: /app/runtime/audit/audit.jsonl
+            - name: CHECKPOINT_STORE_PATH
+              value: /app/runtime/data/langgraph-checkpoints.pkl
+            - name: SLACK_BOT_TOKEN
+              valueFrom:
+                secretKeyRef:
+                  name: k8s-whisperer-secrets
+                  key: slack_bot_token
+                  optional: true
+            - name: SLACK_SIGNING_SECRET
+              valueFrom:
+                secretKeyRef:
+                  name: k8s-whisperer-secrets
+                  key: slack_signing_secret
+                  optional: true
+            - name: GEMINI_API_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: k8s-whisperer-secrets
+                  key: gemini_api_key
+                  optional: true
+          volumeMounts:
+            - name: runtime
+              mountPath: /app/runtime
+          readinessProbe:
+            httpGet:
+              path: /health
+              port: 8010
+            initialDelaySeconds: 5
+            periodSeconds: 10
+          livenessProbe:
+            httpGet:
+              path: /health
+              port: 8010
+            initialDelaySeconds: 15
+            periodSeconds: 20
+      volumes:
+        - name: runtime
+          emptyDir: {}
