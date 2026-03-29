@@ -10,7 +10,7 @@ K8sWhisperer is an autonomous Kubernetes incident response scaffold for PS1 of t
 - Kubernetes client wrappers with pod-focused operations and read-only node observation
 - Append-only JSON Lines audit logging
 - Disk-backed LangGraph checkpoint persistence for HITL resume across process restarts
-- MCP servers for Kubernetes and Slack tools
+- MCP servers for Kubernetes, Slack, and Prometheus tools
 - Tightly scoped RBAC with namespace-scoped pod writes, read-only node access, and demo manifests for `CrashLoopBackOff`, `OOMKilled`, and `Pending Pod`
 - Optional isolated Stellar bonus scaffold with backend attestation helpers, a Soroban contract skeleton, and a minimal frontend
 
@@ -20,6 +20,7 @@ K8sWhisperer is an autonomous Kubernetes incident response scaffold for PS1 of t
 - Post-action verification loop that waits for the pod to return to a healthy running state
 - Real first-pass `OOMKilled` path that generates a concrete HITL recommendation to raise memory on the owning workload; the default strict profile keeps that change recommendation-only
 - Stronger `PendingPod` reasoning that turns scheduling-event evidence into a concrete operator recommendation only after the pod has remained pending for at least five minutes
+- Optional Prometheus-backed `CPUThrottling` detection that recommends CPU review when per-pod throttling exceeds the configured threshold
 - Read-only `NodeNotReady` detection that escalates with node evidence and never mutates nodes
 - Slack approval flow that pauses the graph, acknowledges the callback immediately, and resumes it through the FastAPI webhook in the background
 - Slack incident messages now carry message correlation so follow-up explanations can update the same message when possible
@@ -249,6 +250,7 @@ This prevents the blockchain bonus from becoming a control-path dependency.
 - The checkpoint store is local file-backed, not a shared database-backed runtime store.
 - `OOMKilled` now has a real HITL recommendation path, but the actual workload memory patch remains intentionally manual in the first pass.
 - `Pending Pod` now has a better recommendation path, but still does not mutate cluster resources automatically.
+- `CPUThrottling` now depends on a reachable Prometheus endpoint exposing container throttling metrics; without Prometheus configured, that anomaly path stays inactive.
 - Workload ownership is inferred only from pod owner references in the current namespace-scoped view; full owner-chain resolution is not implemented yet.
 - Audit history is exposed through simple file-backed read endpoints, not a database-backed query service.
 - Live Slack E2E still depends on real workspace credentials and a reachable callback URL, although the same callback and resume path is now covered by automated tests and signed local rehearsal.

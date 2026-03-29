@@ -9,6 +9,7 @@
 - persistent checkpointing for paused/resumed incident threads
 - tightly scoped Kubernetes integration with namespace-scoped pod writes and read-only node access
 - Slack interactive approval callbacks with signed request verification
+- optional Prometheus-backed CPU throttling detection plus a typed Prometheus MCP server
 
 ## Safety And Reliability
 - low-blast-radius actions can be auto-approved

@@ -5,6 +5,7 @@ from backend.app.audit import AuditLogger
 from backend.app.config import Settings
 from backend.app.integrations.k8s import K8sClient
 from backend.app.integrations.llm import LLMClient
+from backend.app.integrations.prometheus import PrometheusClient
 from backend.app.integrations.slack import SlackClient
 
 
@@ -265,6 +266,22 @@ class RecordingSlackClient(SlackClient):
         return payload
 
 
+class FakePrometheusClient(PrometheusClient):
+    def __init__(self) -> None:
+        super().__init__(base_url=None)
+        self.metrics: list[dict] = []
+
+    def get_cpu_throttling(self, *, namespace: str):
+        return {
+            "status": "success",
+            "error": None,
+            "metrics": [
+                {**metric, "namespace": metric.get("namespace") or namespace}
+                for metric in self.metrics
+            ],
+        }
+
+
 class NotFoundAfterRestartK8sClient(FakeK8sClient):
     def verify_pod_recovery(self, **kwargs):
         return {
@@ -332,15 +349,20 @@ def build_settings(tmp_path: Path) -> Settings:
     )
 
 
-def test_runtime_completes_crashloop_with_auto_restart(tmp_path) -> None:
+def build_runtime(*, tmp_path: Path, k8s_client: K8sClient, llm_client: LLMClient | None = None, slack_client: SlackClient | None = None, prometheus_client: PrometheusClient | None = None) -> AgentRuntime:
     settings = build_settings(tmp_path)
-    runtime = AgentRuntime(
+    return AgentRuntime(
         settings=settings,
         audit_logger=AuditLogger(settings.audit_log_path),
-        k8s_client=FakeK8sClient(),
-        llm_client=LLMClient(api_key=""),
-        slack_client=RecordingSlackClient(),
+        k8s_client=k8s_client,
+        llm_client=llm_client or LLMClient(api_key=""),
+        prometheus_client=prometheus_client or FakePrometheusClient(),
+        slack_client=slack_client or RecordingSlackClient(),
     )
+
+
+def test_runtime_completes_crashloop_with_auto_restart(tmp_path) -> None:
+    runtime = build_runtime(tmp_path=tmp_path, k8s_client=FakeK8sClient())
 
     result = runtime.run_once(namespace="default")
 
@@ -357,6 +379,7 @@ def test_runtime_recovers_pending_incident_from_persistent_checkpoint(tmp_path) 
         audit_logger=AuditLogger(settings.audit_log_path),
         k8s_client=FakeK8sClient(),
         llm_client=LLMClient(api_key=""),
+        prometheus_client=FakePrometheusClient(),
         slack_client=RecordingSlackClient(),
     )
 
@@ -388,6 +411,7 @@ def test_runtime_recovers_pending_incident_from_persistent_checkpoint(tmp_path) 
         audit_logger=AuditLogger(settings.audit_log_path),
         k8s_client=FakeK8sClient(),
         llm_client=LLMClient(api_key=""),
+        prometheus_client=FakePrometheusClient(),
         slack_client=RecordingSlackClient(),
     )
 
@@ -397,17 +421,10 @@ def test_runtime_recovers_pending_incident_from_persistent_checkpoint(tmp_path) 
 
 
 def test_runtime_routes_oomkill_to_hitl_recommendation(tmp_path) -> None:
-    settings = build_settings(tmp_path)
     k8s_client = FakeK8sClient()
     k8s_client.mode = "oomkill"
     slack_client = RecordingSlackClient()
-    runtime = AgentRuntime(
-        settings=settings,
-        audit_logger=AuditLogger(settings.audit_log_path),
-        k8s_client=k8s_client,
-        llm_client=LLMClient(api_key=""),
-        slack_client=slack_client,
-    )
+    runtime = build_runtime(tmp_path=tmp_path, k8s_client=k8s_client, slack_client=slack_client)
 
     result = runtime.run_once(namespace="default")
 
@@ -428,16 +445,9 @@ def test_runtime_routes_oomkill_to_hitl_recommendation(tmp_path) -> None:
 
 
 def test_runtime_marks_rejected_hitl_incident_with_explicit_result(tmp_path) -> None:
-    settings = build_settings(tmp_path)
     k8s_client = FakeK8sClient()
     k8s_client.mode = "oomkill"
-    runtime = AgentRuntime(
-        settings=settings,
-        audit_logger=AuditLogger(settings.audit_log_path),
-        k8s_client=k8s_client,
-        llm_client=LLMClient(api_key=""),
-        slack_client=RecordingSlackClient(),
-    )
+    runtime = build_runtime(tmp_path=tmp_path, k8s_client=k8s_client)
 
     pending = runtime.run_once(namespace="default")
     rejected = runtime.resume_incident(incident_id=pending["incident_id"], approved=False)
@@ -448,17 +458,10 @@ def test_runtime_marks_rejected_hitl_incident_with_explicit_result(tmp_path) -> 
 
 
 def test_runtime_pending_pod_recommendation_uses_scheduling_evidence(tmp_path) -> None:
-    settings = build_settings(tmp_path)
     k8s_client = FakeK8sClient()
     k8s_client.mode = "pending"
     slack_client = RecordingSlackClient()
-    runtime = AgentRuntime(
-        settings=settings,
-        audit_logger=AuditLogger(settings.audit_log_path),
-        k8s_client=k8s_client,
-        llm_client=LLMClient(api_key=""),
-        slack_client=slack_client,
-    )
+    runtime = build_runtime(tmp_path=tmp_path, k8s_client=k8s_client, slack_client=slack_client)
 
     result = runtime.run_once(namespace="default")
 
@@ -471,7 +474,6 @@ def test_runtime_pending_pod_recommendation_uses_scheduling_evidence(tmp_path) -
 
 
 def test_runtime_does_not_flag_fresh_pending_pod_before_threshold(tmp_path) -> None:
-    settings = build_settings(tmp_path)
     k8s_client = FakeK8sClient()
     k8s_client.mode = "pending"
     k8s_client.get_cluster_snapshot = lambda namespace: {
@@ -491,13 +493,7 @@ def test_runtime_does_not_flag_fresh_pending_pod_before_threshold(tmp_path) -> N
         "events": [],
         "error": None,
     }
-    runtime = AgentRuntime(
-        settings=settings,
-        audit_logger=AuditLogger(settings.audit_log_path),
-        k8s_client=k8s_client,
-        llm_client=LLMClient(api_key=""),
-        slack_client=RecordingSlackClient(),
-    )
+    runtime = build_runtime(tmp_path=tmp_path, k8s_client=k8s_client)
 
     result = runtime.run_once(namespace="default")
 
@@ -506,14 +502,7 @@ def test_runtime_does_not_flag_fresh_pending_pod_before_threshold(tmp_path) -> N
 
 
 def test_runtime_focuses_seeded_walkthrough_on_matching_resource(tmp_path) -> None:
-    settings = build_settings(tmp_path)
-    runtime = AgentRuntime(
-        settings=settings,
-        audit_logger=AuditLogger(settings.audit_log_path),
-        k8s_client=FakeK8sClient(),
-        llm_client=LLMClient(api_key=""),
-        slack_client=RecordingSlackClient(),
-    )
+    runtime = build_runtime(tmp_path=tmp_path, k8s_client=FakeK8sClient())
 
     result = runtime.run_once(
         namespace="default",
@@ -539,6 +528,7 @@ def test_runtime_checkpoint_view_scopes_anomalies_to_plan_target(tmp_path) -> No
         audit_logger=AuditLogger(settings.audit_log_path),
         k8s_client=FakeK8sClient(),
         llm_client=LLMClient(api_key=""),
+        prometheus_client=FakePrometheusClient(),
         slack_client=RecordingSlackClient(),
     )
 
@@ -570,14 +560,7 @@ def test_runtime_checkpoint_view_scopes_anomalies_to_plan_target(tmp_path) -> No
 
 
 def test_runtime_treats_missing_old_pod_after_restart_as_completed(tmp_path) -> None:
-    settings = build_settings(tmp_path)
-    runtime = AgentRuntime(
-        settings=settings,
-        audit_logger=AuditLogger(settings.audit_log_path),
-        k8s_client=NotFoundAfterRestartK8sClient(),
-        llm_client=LLMClient(api_key=""),
-        slack_client=RecordingSlackClient(),
-    )
+    runtime = build_runtime(tmp_path=tmp_path, k8s_client=NotFoundAfterRestartK8sClient())
 
     result = runtime.run_once(namespace="default")
 
@@ -587,14 +570,7 @@ def test_runtime_treats_missing_old_pod_after_restart_as_completed(tmp_path) -> 
 
 
 def test_runtime_deduplicates_repeat_incidents_for_poller_mode(tmp_path) -> None:
-    settings = build_settings(tmp_path)
-    runtime = AgentRuntime(
-        settings=settings,
-        audit_logger=AuditLogger(settings.audit_log_path),
-        k8s_client=FakeK8sClient(),
-        llm_client=LLMClient(api_key=""),
-        slack_client=RecordingSlackClient(),
-    )
+    runtime = build_runtime(tmp_path=tmp_path, k8s_client=FakeK8sClient())
 
     first = runtime.run_once(namespace="default", deduplicate=True)
     second = runtime.run_once(namespace="default", deduplicate=True)
@@ -606,7 +582,6 @@ def test_runtime_deduplicates_repeat_incidents_for_poller_mode(tmp_path) -> None
 
 
 def test_runtime_maps_owner_hints_from_pod_metadata(tmp_path) -> None:
-    settings = build_settings(tmp_path)
     k8s_client = FakeK8sClient()
     k8s_client.mode = "oomkill"
     k8s_client.get_cluster_snapshot = lambda namespace: {
@@ -635,13 +610,7 @@ def test_runtime_maps_owner_hints_from_pod_metadata(tmp_path) -> None:
         "events": [],
         "error": None,
     }
-    runtime = AgentRuntime(
-        settings=settings,
-        audit_logger=AuditLogger(settings.audit_log_path),
-        k8s_client=k8s_client,
-        llm_client=LLMClient(api_key=""),
-        slack_client=RecordingSlackClient(),
-    )
+    runtime = build_runtime(tmp_path=tmp_path, k8s_client=k8s_client)
 
     result = runtime.run_once(namespace="default")
 
@@ -687,6 +656,7 @@ def test_runtime_executes_real_workload_patch_for_deployment_owned_oomkill(tmp_p
         audit_logger=AuditLogger(settings.audit_log_path),
         k8s_client=k8s_client,
         llm_client=LLMClient(api_key="", allow_workload_patches=True),
+        prometheus_client=FakePrometheusClient(),
         slack_client=slack_client,
     )
 
@@ -739,6 +709,7 @@ def test_runtime_prefers_owned_workload_anomaly_for_seeded_oomkill(tmp_path) -> 
         audit_logger=AuditLogger(settings.audit_log_path),
         k8s_client=k8s_client,
         llm_client=LLMClient(api_key="", allow_workload_patches=True),
+        prometheus_client=FakePrometheusClient(),
         slack_client=RecordingSlackClient(),
     )
 
@@ -762,7 +733,6 @@ def test_runtime_prefers_owned_workload_anomaly_for_seeded_oomkill(tmp_path) -> 
 
 
 def test_runtime_default_profile_keeps_deployment_owned_oomkill_as_recommendation_only(tmp_path) -> None:
-    settings = build_settings(tmp_path)
     k8s_client = FakeK8sClient()
     k8s_client.mode = "oomkill"
     k8s_client.get_cluster_snapshot = lambda namespace: {
@@ -791,12 +761,10 @@ def test_runtime_default_profile_keeps_deployment_owned_oomkill_as_recommendatio
         "events": [],
         "error": None,
     }
-    runtime = AgentRuntime(
-        settings=settings,
-        audit_logger=AuditLogger(settings.audit_log_path),
+    runtime = build_runtime(
+        tmp_path=tmp_path,
         k8s_client=k8s_client,
         llm_client=LLMClient(api_key="", allow_workload_patches=False),
-        slack_client=RecordingSlackClient(),
     )
 
     pending = runtime.run_once(namespace="default")
@@ -809,14 +777,7 @@ def test_runtime_default_profile_keeps_deployment_owned_oomkill_as_recommendatio
 
 
 def test_runtime_records_structured_diagnosis_evidence(tmp_path) -> None:
-    settings = build_settings(tmp_path)
-    runtime = AgentRuntime(
-        settings=settings,
-        audit_logger=AuditLogger(settings.audit_log_path),
-        k8s_client=FakeK8sClient(),
-        llm_client=LLMClient(api_key=""),
-        slack_client=RecordingSlackClient(),
-    )
+    runtime = build_runtime(tmp_path=tmp_path, k8s_client=FakeK8sClient())
 
     result = runtime.run_once(namespace="default")
 
@@ -825,17 +786,10 @@ def test_runtime_records_structured_diagnosis_evidence(tmp_path) -> None:
 
 
 def test_runtime_escalates_node_not_ready_without_cluster_mutation(tmp_path) -> None:
-    settings = build_settings(tmp_path)
     k8s_client = FakeK8sClient()
     k8s_client.mode = "node_not_ready"
     slack_client = RecordingSlackClient()
-    runtime = AgentRuntime(
-        settings=settings,
-        audit_logger=AuditLogger(settings.audit_log_path),
-        k8s_client=k8s_client,
-        llm_client=LLMClient(api_key=""),
-        slack_client=slack_client,
-    )
+    runtime = build_runtime(tmp_path=tmp_path, k8s_client=k8s_client, slack_client=slack_client)
 
     result = runtime.run_once(namespace="default")
 
@@ -852,7 +806,6 @@ def test_runtime_escalates_node_not_ready_without_cluster_mutation(tmp_path) -> 
 
 
 def test_runtime_prefers_live_oomkill_over_stale_backoff_event(tmp_path) -> None:
-    settings = build_settings(tmp_path)
     k8s_client = FakeK8sClient()
     k8s_client.mode = "oomkill"
     k8s_client.get_cluster_snapshot = lambda namespace: {
@@ -892,13 +845,7 @@ def test_runtime_prefers_live_oomkill_over_stale_backoff_event(tmp_path) -> None
         ],
         "error": None,
     }
-    runtime = AgentRuntime(
-        settings=settings,
-        audit_logger=AuditLogger(settings.audit_log_path),
-        k8s_client=k8s_client,
-        llm_client=LLMClient(api_key=""),
-        slack_client=RecordingSlackClient(),
-    )
+    runtime = build_runtime(tmp_path=tmp_path, k8s_client=k8s_client)
 
     result = runtime.run_once(namespace="default")
 
@@ -908,7 +855,6 @@ def test_runtime_prefers_live_oomkill_over_stale_backoff_event(tmp_path) -> None
 
 
 def test_runtime_prioritizes_oomkill_over_pending_without_seed_filters(tmp_path) -> None:
-    settings = build_settings(tmp_path)
     k8s_client = FakeK8sClient()
     k8s_client.get_cluster_snapshot = lambda namespace: {
         "pods": [
@@ -957,13 +903,7 @@ def test_runtime_prioritizes_oomkill_over_pending_without_seed_filters(tmp_path)
         ],
         "error": None,
     }
-    runtime = AgentRuntime(
-        settings=settings,
-        audit_logger=AuditLogger(settings.audit_log_path),
-        k8s_client=k8s_client,
-        llm_client=LLMClient(api_key=""),
-        slack_client=RecordingSlackClient(),
-    )
+    runtime = build_runtime(tmp_path=tmp_path, k8s_client=k8s_client)
 
     result = runtime.run_once(namespace="default")
 
@@ -974,7 +914,6 @@ def test_runtime_prioritizes_oomkill_over_pending_without_seed_filters(tmp_path)
 
 
 def test_runtime_keeps_recent_seeded_oom_event_when_pod_is_absent(tmp_path) -> None:
-    settings = build_settings(tmp_path)
     k8s_client = FakeK8sClient()
     k8s_client.get_cluster_snapshot = lambda namespace: {
         "pods": [],
@@ -982,13 +921,7 @@ def test_runtime_keeps_recent_seeded_oom_event_when_pod_is_absent(tmp_path) -> N
         "events": [],
         "error": None,
     }
-    runtime = AgentRuntime(
-        settings=settings,
-        audit_logger=AuditLogger(settings.audit_log_path),
-        k8s_client=k8s_client,
-        llm_client=LLMClient(api_key=""),
-        slack_client=RecordingSlackClient(),
-    )
+    runtime = build_runtime(tmp_path=tmp_path, k8s_client=k8s_client)
 
     result = runtime.run_once(
         namespace="default",
@@ -1010,17 +943,43 @@ def test_runtime_keeps_recent_seeded_oom_event_when_pod_is_absent(tmp_path) -> N
 
 
 def test_runtime_treats_healthy_workload_replacement_as_restart_success(tmp_path) -> None:
-    settings = build_settings(tmp_path)
-    runtime = AgentRuntime(
-        settings=settings,
-        audit_logger=AuditLogger(settings.audit_log_path),
-        k8s_client=ReplacementPodAfterRestartK8sClient(),
-        llm_client=LLMClient(api_key=""),
-        slack_client=RecordingSlackClient(),
-    )
+    runtime = build_runtime(tmp_path=tmp_path, k8s_client=ReplacementPodAfterRestartK8sClient())
 
     result = runtime.run_once(namespace="default")
 
     assert result["status"] == "completed"
     assert result["approved"] is True
     assert "replaced pod" in result["result"]
+
+
+def test_runtime_detects_cpu_throttling_from_prometheus_metrics(tmp_path) -> None:
+    k8s_client = FakeK8sClient()
+    k8s_client.get_cluster_snapshot = lambda namespace: {
+        "pods": [
+            {
+                "name": "demo-api-123",
+                "namespace": namespace,
+                "phase": "Running",
+                "reason": None,
+                "owner_kind": "Deployment",
+                "owner_name": "demo-api",
+                "restart_count": 0,
+                "waiting_reasons": [],
+                "container_statuses": [{"name": "demo", "ready": True}],
+            }
+        ],
+        "nodes": [],
+        "events": [],
+        "error": None,
+    }
+    prometheus_client = FakePrometheusClient()
+    prometheus_client.metrics = [{"pod": "demo-api-123", "ratio": 0.73, "threshold": 0.5}]
+    runtime = build_runtime(tmp_path=tmp_path, k8s_client=k8s_client, prometheus_client=prometheus_client)
+
+    result = runtime.run_once(namespace="default")
+
+    assert result["status"] == "awaiting_human"
+    assert result["anomalies"][0]["anomaly_type"] == "CPUThrottling"
+    assert result["anomalies"][0]["workload_name"] == "demo-api"
+    assert result["plan"]["action"] == "notify_only"
+    assert "throttling ratio" in result["plan"]["parameters"]["recommendation"]

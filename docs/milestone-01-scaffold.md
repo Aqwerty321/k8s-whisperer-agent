@@ -51,7 +51,7 @@ This milestone captures the first runnable baseline of K8sWhisperer after the in
 - MCP tool servers are scaffolded for rubric coverage and later extension
 
 ## Known Gaps After This Milestone
-- Prometheus-backed `CPUThrottling` is still unwired
+- Prometheus-backed `CPUThrottling` is now wired as an optional metric-driven recommendation path
 - Multi-namespace observation is not implemented yet
 - Background polling still picks one primary anomaly per cycle instead of surfacing every concurrent issue
 - Full owner-chain resolution beyond pod owner references is still limited

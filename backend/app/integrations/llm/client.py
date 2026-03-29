@@ -74,6 +74,20 @@ class LLMClient:
             anomalies.append(anomaly)
             seen.add(key)
 
+        for metric in ((cluster_state.get("prometheus") or {}).get("metrics") if isinstance(cluster_state.get("prometheus"), dict) else []) or []:
+            anomaly = self._prometheus_metric_to_anomaly(metric, namespace=namespace)
+            if anomaly is None:
+                continue
+            pod = pods_by_name.get(str(anomaly.get("resource_name") or ""))
+            if pod is not None:
+                self._enrich_anomaly_with_pod_owner(anomaly, pod)
+            key = (anomaly["anomaly_type"], anomaly["resource_name"])
+            if key in seen:
+                self._merge_evidence(anomalies, anomaly)
+                continue
+            anomalies.append(anomaly)
+            seen.add(key)
+
         return self._drop_shadowed_anomalies(anomalies)
 
     def diagnose(
@@ -159,12 +173,15 @@ class LLMClient:
                 "requires_human": True,
             },
             "CPUThrottling": {
-                "action": "collect_more_evidence",
+                "action": "notify_only",
                 "target_kind": anomaly.get("resource_kind", "Pod"),
                 "target_name": resource_name,
                 "namespace": namespace,
-                "parameters": {},
-                "confidence": 0.45,
+                "parameters": {
+                    "recommendation": self._cpu_throttling_recommendation(anomaly),
+                    "observed_ratio": anomaly.get("metrics", {}).get("cpu_throttling_ratio"),
+                },
+                "confidence": 0.58,
                 "blast_radius": "medium",
                 "reason": diagnosis,
                 "requires_human": True,
@@ -397,6 +414,35 @@ class LLMClient:
 
         return None
 
+    def _prometheus_metric_to_anomaly(self, metric: dict[str, Any], *, namespace: str) -> Anomaly | None:
+        try:
+            ratio = float(metric.get("ratio") or 0.0)
+            threshold = float(metric.get("threshold") or 0.5)
+        except (TypeError, ValueError):
+            return None
+        if ratio <= threshold:
+            return None
+
+        pod_name = str(metric.get("pod") or "unknown")
+        anomaly = self._build_anomaly(
+            anomaly_type="CPUThrottling",
+            severity="medium",
+            resource_kind="Pod",
+            resource_name=pod_name,
+            namespace=str(metric.get("namespace") or namespace),
+            summary=f"Pod {pod_name} is CPU throttled above the configured threshold.",
+            confidence=min(0.95, 0.6 + min(ratio, 1.0) * 0.3),
+            evidence=[
+                f"cpu throttling ratio: {ratio:.2f}",
+                f"cpu throttling threshold: {threshold:.2f}",
+            ],
+        )
+        anomaly["metrics"] = {
+            "cpu_throttling_ratio": ratio,
+            "cpu_throttling_threshold": threshold,
+        }
+        return anomaly
+
     def _drop_shadowed_anomalies(self, anomalies: list[Anomaly]) -> list[Anomaly]:
         oomkilled_resources = {
             str(anomaly.get("resource_name") or "")
@@ -569,6 +615,13 @@ class LLMClient:
         if "affinity" in lower or "selector" in lower:
             return f"Review node selectors or affinity rules for {workload} because they currently exclude all available nodes."
         return f"Review scheduling events, resource requests, selectors, and tolerations for {workload} before retrying the pod."
+
+    def _cpu_throttling_recommendation(self, anomaly: Anomaly) -> str:
+        workload = self._workload_label(anomaly)
+        ratio = ((anomaly.get("metrics") or {}).get("cpu_throttling_ratio") if isinstance(anomaly.get("metrics"), dict) else None)
+        if isinstance(ratio, (float, int)):
+            return f"Review CPU requests and limits for {workload}; Prometheus reports a throttling ratio of {float(ratio):.2f}."
+        return f"Review CPU requests and limits for {workload}; Prometheus indicates sustained CPU throttling."
 
     def _oomkill_recommendation(self, anomaly: Anomaly) -> str:
         workload = self._workload_label(anomaly)

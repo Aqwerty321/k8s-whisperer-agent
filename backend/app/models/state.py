@@ -38,6 +38,7 @@ class Anomaly(TypedDict, total=False):
     summary: str
     confidence: float
     evidence: list[str]
+    metrics: dict[str, Any]
 
 
 class RemediationPlan(TypedDict, total=False):

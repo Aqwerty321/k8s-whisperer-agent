@@ -10,6 +10,7 @@ from backend.app.audit import AuditLogger
 from backend.app.config import get_settings
 from backend.app.integrations.k8s import K8sClient
 from backend.app.integrations.llm import LLMClient
+from backend.app.integrations.prometheus import PrometheusClient
 from backend.app.integrations.slack import SlackClient
 
 
@@ -23,6 +24,7 @@ async def lifespan(app: FastAPI):
         model=settings.gemini_model,
         allow_workload_patches=settings.allow_workload_patches,
     )
+    prometheus_client = PrometheusClient(base_url=settings.prometheus_url)
     slack_client = SlackClient(
         bot_token=settings.slack_bot_token,
         signing_secret=settings.slack_signing_secret,
@@ -35,6 +37,7 @@ async def lifespan(app: FastAPI):
         audit_logger=audit_logger,
         k8s_client=k8s_client,
         llm_client=llm_client,
+        prometheus_client=prometheus_client,
         slack_client=slack_client,
     )
     poller = BackgroundPoller(
@@ -46,6 +49,7 @@ async def lifespan(app: FastAPI):
     app.state.audit_logger = audit_logger
     app.state.k8s_client = k8s_client
     app.state.llm_client = llm_client
+    app.state.prometheus_client = prometheus_client
     app.state.slack_client = slack_client
     app.state.runtime = runtime
     app.state.poller = poller

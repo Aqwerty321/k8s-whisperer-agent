@@ -8,6 +8,7 @@ from ..audit import AuditLogger
 from ..config import Settings
 from ..integrations.k8s import K8sClient
 from ..integrations.llm import LLMClient
+from ..integrations.prometheus import PrometheusClient
 from ..integrations.slack import SlackClient
 from ..models import LogEntry, WhisperState, current_timestamp, latest_anomaly
 from .safety import is_auto_approvable
@@ -19,6 +20,7 @@ class AgentDependencies:
     audit_logger: AuditLogger
     k8s_client: K8sClient
     llm_client: LLMClient
+    prometheus_client: PrometheusClient
     slack_client: SlackClient
 
 
@@ -26,6 +28,7 @@ def make_observe_node(deps: AgentDependencies):
     def observe_node(state: WhisperState) -> WhisperState:
         namespace = state.get("namespace") or deps.settings.k8s_namespace
         snapshot = deps.k8s_client.get_cluster_snapshot(namespace)
+        snapshot["prometheus"] = deps.prometheus_client.get_cpu_throttling(namespace=namespace)
         seeded_events = list(state.get("events", []))
         live_events = list(snapshot.get("events", []))
         combined_events = seeded_events + [event for event in live_events if event not in seeded_events]
@@ -423,8 +426,9 @@ def _prioritize_anomalies(anomalies: list[dict[str, object]]) -> list[dict[str, 
         "OOMKilled": 1,
         "CrashLoopBackOff": 2,
         "PendingPod": 3,
-        "ImagePullBackOff": 4,
-        "EvictedPod": 5,
+        "CPUThrottling": 4,
+        "ImagePullBackOff": 5,
+        "EvictedPod": 6,
     }
     sorted_anomalies = sorted(
         anomalies,

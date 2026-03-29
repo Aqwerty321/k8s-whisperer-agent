@@ -10,6 +10,7 @@ from ..audit import AuditLogger
 from ..config import Settings
 from ..integrations.k8s import K8sClient
 from ..integrations.llm import LLMClient
+from ..integrations.prometheus import PrometheusClient
 from ..integrations.slack import SlackClient
 from ..models import WhisperState, build_initial_state, current_timestamp
 from .checkpointer import PersistentInMemorySaver
@@ -66,6 +67,7 @@ class AgentRuntime:
         audit_logger: AuditLogger,
         k8s_client: K8sClient,
         llm_client: LLMClient,
+        prometheus_client: PrometheusClient,
         slack_client: SlackClient,
     ) -> None:
         self.deps = AgentDependencies(
@@ -73,6 +75,7 @@ class AgentRuntime:
             audit_logger=audit_logger,
             k8s_client=k8s_client,
             llm_client=llm_client,
+            prometheus_client=prometheus_client,
             slack_client=slack_client,
         )
         self.checkpointer = PersistentInMemorySaver(settings.checkpoint_store_path)
