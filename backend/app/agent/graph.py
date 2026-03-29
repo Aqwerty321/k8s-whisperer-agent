@@ -11,7 +11,7 @@ from ..config import Settings
 from ..integrations.k8s import K8sClient
 from ..integrations.llm import LLMClient
 from ..integrations.slack import SlackClient
-from ..models import WhisperState, build_initial_state
+from ..models import WhisperState, build_initial_state, current_timestamp
 from .checkpointer import PersistentInMemorySaver
 from .incident_tracker import IncidentTracker
 from .nodes import (
@@ -102,6 +102,7 @@ class AgentRuntime:
         config = {"configurable": {"thread_id": incident_id}}
         result = self.graph.invoke(Command(resume={"approved": approved}), config=config)
         normalized = self._normalize_result(result=result, incident_id=incident_id, config=config)
+        normalized["updated_at"] = current_timestamp()
         with self._lock:
             self._latest_states[incident_id] = normalized
             self._pending_incidents.discard(incident_id)
@@ -111,9 +112,14 @@ class AgentRuntime:
     def get_status(self) -> dict[str, Any]:
         self._hydrate_from_checkpoints()
         with self._lock:
+            latest_incidents = sorted(
+                self._latest_states.values(),
+                key=lambda incident: str(incident.get("updated_at") or incident.get("created_at") or ""),
+                reverse=True,
+            )
             return {
                 "pending_incidents": sorted(self._pending_incidents),
-                "latest_incidents": list(self._latest_states.values())[-10:],
+                "latest_incidents": latest_incidents[:10],
                 "checkpoint_threads": self.checkpointer.list_threads(),
                 "tracked_incidents": self.incident_tracker.snapshot(),
             }
@@ -137,6 +143,7 @@ class AgentRuntime:
         config = {"configurable": {"thread_id": incident_id}}
         result = self.graph.invoke(initial_state, config=config)
         normalized = self._normalize_result(result=result, incident_id=incident_id, config=config)
+        normalized["updated_at"] = current_timestamp()
         filtered_anomalies, suppressed_anomalies = self.incident_tracker.filter_anomalies(
             incident_id=incident_id,
             anomalies=list(normalized.get("anomalies", [])),
@@ -196,6 +203,8 @@ class AgentRuntime:
     def _snapshot_to_incident(self, *, snapshot: Any, incident_id: str) -> dict[str, Any]:
         values = dict(snapshot.values or {})
         values.setdefault("incident_id", incident_id)
+        values.setdefault("created_at", current_timestamp())
+        values.setdefault("updated_at", current_timestamp())
         interrupts = [interrupt.value for interrupt in snapshot.interrupts]
         if not values.get("slack_message_ts"):
             values["slack_message_ts"] = _interrupt_slack_message_ts(interrupts)
@@ -211,6 +220,26 @@ class AgentRuntime:
         values["interrupts"] = interrupts
         values["tracker_anomalies"] = list(values.get("anomalies") or [])
         return values
+
+    def prune_runtime_state(self, *, keep_incidents: int = 5) -> dict[str, int]:
+        self._hydrate_from_checkpoints()
+        with self._lock:
+            ordered = sorted(
+                self._latest_states.items(),
+                key=lambda item: str(item[1].get("updated_at") or item[1].get("created_at") or ""),
+                reverse=True,
+            )
+            keep_ids = {incident_id for incident_id, _ in ordered[:keep_incidents]}
+            remove_ids = [incident_id for incident_id, _ in ordered[keep_incidents:]]
+            for incident_id in remove_ids:
+                self._latest_states.pop(incident_id, None)
+                self._pending_incidents.discard(incident_id)
+                self.checkpointer.delete_thread(incident_id)
+
+        return {
+            "remaining_incidents": len(keep_ids),
+            "removed_incidents": len(remove_ids),
+        }
 
 
 def _interrupt_slack_message_ts(interrupts: list[Any]) -> str | None:

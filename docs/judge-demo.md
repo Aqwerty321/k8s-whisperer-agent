@@ -6,6 +6,7 @@
 - Confirm `curl -sS https://slack.aqwerty321.me/health | jq`
 - Run `make demo-snapshot`
 - If you need to re-show the OOMKilled fix, run `make demo-reset-oomkill`
+- If the lists get noisy, run `make demo-prune`
 - Open Slack `#alerts`
 - Open one terminal for `curl -sS http://127.0.0.1:8010/api/incidents | jq`
 - Open one terminal for `curl -sS http://127.0.0.1:8010/api/audit | jq`
@@ -24,6 +25,7 @@
    Run `curl -sS http://127.0.0.1:8010/api/audit | jq`
    Point out the explanation, decision, and result trail.
    If useful, run `bash scripts/export_incident_report.sh` for a compact markdown report.
+   Use `make demo-snapshot` to show the live scoreboard of completed, awaiting, approved, and rejected outcomes.
 
 4. PendingPod recommendation-only path
    Run `bash scripts/demo_incident.sh pending | jq`

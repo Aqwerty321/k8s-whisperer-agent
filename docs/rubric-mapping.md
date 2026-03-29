@@ -21,10 +21,11 @@
 ## Demoability
 - `make demo-ready` resets the environment into a clean judge-ready state
 - `make demo-reset-oomkill` restores the OOMKilled scenario so the approved fix can be shown repeatedly
+- `make demo-prune` trims old incident and audit noise without rebuilding the whole environment
 - repeatable CrashLoopBackOff auto-remediation story
 - repeatable OOMKilled human-approval story
 - repeatable PendingPod recommendation-only story
-- `make demo-snapshot` shows live runtime status, incidents, audit, and tracker state
+- `make demo-snapshot` shows live runtime status, incidents, audit, tracker state, and a simple outcome scoreboard
 
 ## Practicality
 - single backend service, not over-engineered microservices

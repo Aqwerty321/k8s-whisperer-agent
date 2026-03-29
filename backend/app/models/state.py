@@ -68,6 +68,8 @@ class LogEntry(TypedDict, total=False):
 
 class WhisperState(TypedDict, total=False):
     incident_id: str
+    created_at: str
+    updated_at: str
     namespace: str
     cluster_state: dict[str, Any]
     events: list[dict[str, Any]]
@@ -108,6 +110,8 @@ def build_initial_state(
 ) -> WhisperState:
     return {
         "incident_id": incident_id or new_incident_id(),
+        "created_at": current_timestamp(),
+        "updated_at": current_timestamp(),
         "namespace": namespace,
         "cluster_state": {},
         "events": list(seed_events or []),

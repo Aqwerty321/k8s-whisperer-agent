@@ -25,6 +25,11 @@ class PollerToggleRequest(BaseModel):
     enabled: bool
 
 
+class PruneDemoRequest(BaseModel):
+    keep_incidents: int = Field(default=5, ge=0, le=50)
+    keep_audit_entries: int = Field(default=5, ge=0, le=200)
+
+
 router = APIRouter()
 
 
@@ -172,6 +177,16 @@ async def toggle_poller(payload: PollerToggleRequest, request: Request) -> dict[
     else:
         await poller.stop()
     return poller.get_status()
+
+
+@router.post("/api/demo/prune")
+async def prune_demo_state(payload: PruneDemoRequest, request: Request) -> dict[str, Any]:
+    runtime_result = request.app.state.runtime.prune_runtime_state(keep_incidents=payload.keep_incidents)
+    audit_result = request.app.state.audit_logger.prune_recent(payload.keep_audit_entries)
+    return {
+        **runtime_result,
+        "audit": audit_result,
+    }
 
 
 @router.post("/api/slack/actions")

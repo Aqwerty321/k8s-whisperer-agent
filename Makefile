@@ -3,7 +3,7 @@ PIP := .venv/bin/pip
 PYTEST := .venv/bin/pytest
 UVICORN := .venv/bin/uvicorn
 
-.PHONY: venv install test run lint demo-setup demo-deploy demo-reset demo-ready demo-snapshot demo-reset-oomkill tunnel poll-once docker-build deploy-backend public-bridge
+.PHONY: venv install test run lint demo-setup demo-deploy demo-reset demo-ready demo-snapshot demo-reset-oomkill demo-prune tunnel poll-once docker-build deploy-backend public-bridge
 
 venv:
 	python3 -m venv .venv
@@ -34,6 +34,9 @@ demo-snapshot:
 
 demo-reset-oomkill:
 	bash scripts/demo_reset_oomkill.sh
+
+demo-prune:
+	bash scripts/demo_prune.sh
 
 docker-build:
 	docker build -t k8s-whisperer:dev .

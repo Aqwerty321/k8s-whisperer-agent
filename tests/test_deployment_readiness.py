@@ -105,6 +105,9 @@ def test_demo_snapshot_script_reports_health_incidents_and_audit() -> None:
     assert "tracked_incidents" in script
     assert "INCIDENT_LIMIT" in script
     assert "AUDIT_LIMIT" in script
+    assert "== Scoreboard ==" in script
+    assert "by_status" in script
+    assert "by_decision" in script
 
 
 def test_demo_incident_oomkill_uses_live_pod_name() -> None:
@@ -151,3 +154,11 @@ def test_export_incident_report_script_uses_report_endpoint() -> None:
 
     assert "/api/incidents/${INCIDENT_ID}/report" in script
     assert "limit=1" in script
+
+
+def test_demo_prune_script_uses_demo_prune_endpoint() -> None:
+    script = Path("scripts/demo_prune.sh").read_text(encoding="utf-8")
+
+    assert "/api/demo/prune" in script
+    assert "KEEP_INCIDENTS" in script
+    assert "KEEP_AUDIT_ENTRIES" in script

@@ -141,6 +141,11 @@ make demo-snapshot
 make demo-reset-oomkill
 ```
 
+### Prune old demo incidents and audit noise
+```bash
+make demo-prune
+```
+
 ### Backup local approval path
 ```bash
 bash scripts/approve_incident.sh

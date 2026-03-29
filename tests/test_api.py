@@ -228,6 +228,8 @@ def test_incident_list_supports_filters() -> None:
         client.app.state.runtime._latest_states["incident-filter-1"] = {
             "incident_id": "incident-filter-1",
             "status": "awaiting_human",
+            "created_at": "2026-03-29T00:00:01Z",
+            "updated_at": "2026-03-29T00:00:01Z",
             "namespace": "default",
             "awaiting_human": True,
             "anomalies": [{"anomaly_type": "OOMKilled", "resource_name": "demo-oomkill"}],
@@ -236,6 +238,8 @@ def test_incident_list_supports_filters() -> None:
         client.app.state.runtime._latest_states["incident-filter-2"] = {
             "incident_id": "incident-filter-2",
             "status": "completed",
+            "created_at": "2026-03-29T00:00:00Z",
+            "updated_at": "2026-03-29T00:00:00Z",
             "namespace": "default",
             "awaiting_human": False,
             "anomalies": [{"anomaly_type": "CrashLoopBackOff", "resource_name": "demo-crashloop"}],
@@ -265,6 +269,32 @@ def test_audit_endpoint_supports_search_filters() -> None:
 
     assert response.status_code == 200
     assert response.json()["count"] >= 1
+
+
+def test_demo_prune_endpoint_trims_runtime_and_audit_state() -> None:
+    with TestClient(app) as client:
+        for index in range(4):
+            client.app.state.runtime._latest_states[f"incident-prune-{index}"] = {
+                "incident_id": f"incident-prune-{index}",
+                "status": "completed",
+                "created_at": f"2026-03-29T00:00:0{index}Z",
+                "updated_at": f"2026-03-29T00:00:0{index}Z",
+            }
+            client.app.state.audit_logger.log(
+                {
+                    "incident_id": f"incident-prune-{index}",
+                    "timestamp": f"2026-03-29T00:00:0{index}Z",
+                    "decision": "approved",
+                    "action": "patch_pod",
+                    "result": "ok",
+                }
+            )
+
+        response = client.post("/api/demo/prune", json={"keep_incidents": 2, "keep_audit_entries": 2})
+
+    assert response.status_code == 200
+    assert response.json()["remaining_incidents"] == 2
+    assert response.json()["audit"]["kept"] == 2
 
 
 def test_simulated_slack_workflow_end_to_end() -> None:

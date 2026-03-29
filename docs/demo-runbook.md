@@ -131,13 +131,20 @@ make demo-reset-oomkill
 
 This restores the `demo-oomkill` Deployment memory limit to the failing baseline so the next approval can visibly patch it again.
 
+## Pruning Old Demo Noise
+If you want to keep the environment running but trim older incident and audit clutter:
+
+```bash
+make demo-prune
+```
+
 ## Judge Flow
 1. Run `make demo-ready`.
 2. Run `make demo-snapshot`.
 3. Show `curl -sS http://127.0.0.1:8010/health`.
 4. Run `bash scripts/demo_incident.sh crashloop | jq` and show the completed restart outcome.
 5. Run `bash scripts/demo_incident.sh oomkill | jq`, open Slack, and approve the newest card.
-6. Show `curl -sS http://127.0.0.1:8010/api/incidents | jq`.
+6. Run `make demo-snapshot` and show the scoreboard plus recent incidents.
 7. Show `curl -sS http://127.0.0.1:8010/api/audit | jq`.
 8. Run `bash scripts/demo_incident.sh pending | jq` and explain the recommendation-only safety path.
 

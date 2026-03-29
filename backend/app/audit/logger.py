@@ -77,3 +77,15 @@ class AuditLogger:
         if limit <= 0:
             return []
         return records[-limit:]
+
+    def prune_recent(self, keep_last: int) -> dict[str, int]:
+        records = self.read_all()
+        if keep_last < 0:
+            keep_last = 0
+        retained = records[-keep_last:] if keep_last else []
+        self.path.parent.mkdir(parents=True, exist_ok=True)
+        with self.path.open("w", encoding="utf-8") as file_handle:
+            for record in retained:
+                file_handle.write(json.dumps(record, sort_keys=True))
+                file_handle.write("\n")
+        return {"kept": len(retained), "removed": max(len(records) - len(retained), 0)}
