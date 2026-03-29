@@ -31,6 +31,7 @@ class Settings(BaseSettings):
     poll_interval_seconds: int = 30
     auto_approve_threshold: float = Field(default=0.8, ge=0.0, le=1.0)
     enable_background_polling: bool = False
+    incident_dedup_window_seconds: int = 300
     checkpoint_store_path: str = "data/langgraph-checkpoints.pkl"
     verify_timeout_seconds: int = 20
 

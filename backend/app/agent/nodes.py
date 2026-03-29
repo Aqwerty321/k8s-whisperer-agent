@@ -57,7 +57,7 @@ def make_diagnose_node(deps: AgentDependencies):
     def diagnose_node(state: WhisperState) -> WhisperState:
         anomaly = latest_anomaly(state)
         if anomaly is None:
-            return {"diagnosis": "No anomaly was available for diagnosis."}
+            return {"diagnosis": "No anomaly was available for diagnosis.", "diagnosis_evidence": []}
 
         pod_name = anomaly.get("resource_name", "unknown")
         namespace = anomaly.get("namespace") or state.get("namespace") or deps.settings.k8s_namespace
@@ -68,7 +68,10 @@ def make_diagnose_node(deps: AgentDependencies):
             logs=logs,
             pod_description=pod_description,
         )
-        return {"diagnosis": diagnosis}
+        return {
+            "diagnosis": diagnosis,
+            "diagnosis_evidence": _build_diagnosis_evidence(anomaly=anomaly, logs=logs, pod_description=pod_description),
+        }
 
     return diagnose_node
 
@@ -124,7 +127,11 @@ def make_hitl_node(deps: AgentDependencies):
             }
         )
         approved = bool((decision or {}).get("approved"))
-        return {"approved": approved, "awaiting_human": False}
+        return {
+            "approved": approved,
+            "awaiting_human": False,
+            "slack_message_ts": slack_response.get("ts") or state.get("slack_message_ts"),
+        }
 
     return hitl_node
 
@@ -233,17 +240,30 @@ def make_explain_log_node(deps: AgentDependencies):
             "action": (state.get("plan") or {}).get("action", "notify_only"),
             "explanation": explanation,
             "diagnosis": state.get("diagnosis", ""),
+            "diagnosis_evidence": state.get("diagnosis_evidence", []),
             "result": state.get("result", ""),
             "tx_id": state.get("attestation_tx_id"),
         }
         deps.audit_logger.log(entry)
-        deps.slack_client.send_message(
+        slack_response = deps.slack_client.update_message(
             channel=state.get("slack_channel") or deps.settings.slack_default_channel,
             text=explanation,
+            ts=state.get("slack_message_ts"),
+            blocks=deps.slack_client.render_status_blocks(
+                incident_id=state["incident_id"],
+                title="K8sWhisperer incident update",
+                status="completed" if not state.get("error") else "error",
+                anomaly_summary=anomaly.get("summary") if anomaly else None,
+                diagnosis=state.get("diagnosis", ""),
+                action=(state.get("plan") or {}).get("action"),
+                result=state.get("result", ""),
+                timeline=_timeline_for_state(state),
+            ),
         )
         return {
             "explanation": explanation,
             "audit_log": state.get("audit_log", []) + [entry],
+            "slack_message_ts": slack_response.get("ts") or state.get("slack_message_ts"),
         }
 
     return explain_log_node
@@ -258,3 +278,42 @@ def _decision_label(state: WhisperState) -> str:
     if state.get("approved") is True:
         return "auto_approved"
     return "not_required_or_pending"
+
+
+def _build_diagnosis_evidence(
+    *,
+    anomaly: dict[str, object],
+    logs: str,
+    pod_description: dict[str, object],
+) -> list[str]:
+    evidence = list(anomaly.get("evidence", [])) if isinstance(anomaly.get("evidence"), list) else []
+    if logs and "Unable to fetch logs" not in logs:
+        first_line = logs.strip().splitlines()[0] if logs.strip() else "logs collected"
+        evidence.append(f"logs: {first_line[:200]}")
+    for event in pod_description.get("events", []) if isinstance(pod_description.get("events"), list) else []:
+        if not isinstance(event, dict):
+            continue
+        reason = event.get("reason") or "event"
+        message = event.get("message") or ""
+        entry = f"event {reason}: {message}".strip()
+        if entry not in evidence:
+            evidence.append(entry[:240])
+    return evidence[:10]
+
+
+def _timeline_for_state(state: WhisperState) -> list[str]:
+    plan = state.get("plan") or {}
+    timeline = [
+        "observe completed",
+        "detect completed",
+        "diagnose completed",
+        f"plan generated: {plan.get('action', 'unknown')}",
+    ]
+    if state.get("approved") is True and bool(plan.get("requires_human")):
+        timeline.append("human approval received")
+    elif state.get("approved") is False:
+        timeline.append("human approval rejected")
+    elif state.get("approved") is True:
+        timeline.append("auto-approved by safety gate")
+    timeline.append(f"execution result: {state.get('result', 'pending')}")
+    return timeline

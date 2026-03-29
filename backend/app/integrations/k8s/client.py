@@ -212,9 +212,15 @@ class K8sClient:
 
     def _serialize_pod(self, pod: Any) -> dict[str, Any]:
         statuses = getattr(getattr(pod, "status", None), "container_statuses", None) or []
+        owners = getattr(getattr(pod, "metadata", None), "owner_references", None) or []
         container_statuses = []
         total_restarts = 0
         waiting_reasons: list[str] = []
+        owner_kind = None
+        owner_name = None
+
+        if owners:
+            owner_kind, owner_name = self._normalize_owner_reference(owners[0])
 
         for status in statuses:
             restart_count = getattr(status, "restart_count", 0) or 0
@@ -238,10 +244,21 @@ class K8sClient:
             "namespace": getattr(getattr(pod, "metadata", None), "namespace", "default"),
             "phase": getattr(getattr(pod, "status", None), "phase", "Unknown"),
             "reason": getattr(getattr(pod, "status", None), "reason", None),
+            "owner_kind": owner_kind,
+            "owner_name": owner_name,
             "restart_count": total_restarts,
             "waiting_reasons": waiting_reasons,
             "container_statuses": container_statuses,
         }
+
+    def _normalize_owner_reference(self, owner: Any) -> tuple[str | None, str | None]:
+        kind = getattr(owner, "kind", None)
+        name = getattr(owner, "name", None)
+        if kind == "ReplicaSet" and isinstance(name, str) and "-" in name:
+            deployment_name = name.rsplit("-", 1)[0]
+            if deployment_name:
+                return "Deployment", deployment_name
+        return kind, name
 
     def _serialize_event(self, event: Any) -> dict[str, Any]:
         involved_object = getattr(event, "involved_object", None)

@@ -19,7 +19,15 @@ K8sWhisperer is an autonomous Kubernetes incident response scaffold for PS1 of t
 - Real first-pass remediation plan: restart the pod by delete request when the action is low blast-radius and above threshold
 - Post-action verification loop that waits for the pod to return to a healthy running state
 - Real first-pass `OOMKilled` path that generates a concrete HITL recommendation to raise memory and then restart the workload
+- Stronger `PendingPod` reasoning that turns scheduling-event evidence into a concrete operator recommendation
 - Slack approval flow that pauses the graph and resumes it through the FastAPI webhook
+- Slack incident messages now carry message correlation so follow-up explanations can update the same message when possible
+- Slack approval callbacks now update the tracked incident message immediately on approve or reject
+- Slack incident messages now use richer status blocks with summary, action, result, and timeline context
+- Poller mode suppresses repeated incidents within a configurable dedup window instead of reopening the same alert every cycle
+- Pod anomalies now carry lightweight owner/workload hints from pod metadata for better recommendations
+- Diagnosis now carries structured evidence alongside the human-readable diagnosis string
+- Incident and audit APIs now support lightweight filtering for faster demo inspection
 - Persistent checkpoint store at `data/langgraph-checkpoints.pkl`
 - Optional background polling loop that can be enabled from config or triggered from the API
 
@@ -74,6 +82,8 @@ bash scripts/tunnel.sh
 
 Use the resulting public URL in your Slack app interactive callback settings and `PUBLIC_BASE_URL`.
 
+For a stable custom-domain setup, use the named tunnel workflow documented in `docs/stable-domain-tunnel.md`.
+
 ### 7. Run tests
 ```bash
 make test
@@ -83,6 +93,10 @@ make test
 - `GET /health`
 - `GET /api/status`
 - `GET /api/incidents/{incident_id}`
+- `GET /api/incidents`
+- `GET /api/incidents/{incident_id}/summary`
+- `GET /api/audit`
+- `GET /api/audit/{incident_id}`
 - `POST /api/incidents/run-once`
 - `POST /api/poller/run-once`
 - `POST /api/poller`
@@ -100,6 +114,25 @@ make test
 8. Clicking `Approve` or `Reject` resumes the graph via the FastAPI webhook.
 9. The result is explained and appended to `audit_log/audit.jsonl`.
 
+## Demo Helpers
+- Seed a CrashLoopBackOff incident: `bash scripts/demo_incident.sh crashloop | jq`
+- Seed an OOMKilled incident: `bash scripts/demo_incident.sh oomkill | jq`
+- Seed a PendingPod incident: `bash scripts/demo_incident.sh pending | jq`
+- Full operator runbook: `docs/demo-runbook.md`
+
+## Slack Workflow Status
+- The repo now includes an automated end-to-end simulated Slack workflow test covering:
+  - incident creation
+  - HITL pause
+  - webhook callback approval
+  - graph resume
+  - final audit entry
+- Remaining work for a real live Slack end-to-end run is operational rather than architectural:
+  - configure the Slack app interactive callback URL to the public FastAPI endpoint
+  - supply live bot token and signing secret
+  - confirm the bot is invited to the target channel
+  - optionally replace stubbed message behavior with richer Block Kit message updates
+
 ## Useful Make Targets
 - `make install`
 - `make run`
@@ -109,10 +142,17 @@ make test
 - `make tunnel`
 - `make poll-once`
 
+## Stable Domain Option
+If you control a domain and move DNS to Cloudflare, you can expose the app on a stable hostname instead of a temporary `trycloudflare.com` URL.
+
+- Setup guide: `docs/stable-domain-tunnel.md`
+- Named tunnel runner: `bash scripts/tunnel_named.sh`
+
 ## Why This Structure Fits PS1
 - The full required pipeline is present as explicit graph nodes.
 - The shared state is typed and centrally defined.
 - The Slack callback path is visible end-to-end instead of being hidden inside framework magic.
+- Incident message correlation is explicit in shared state rather than hidden in the Slack client.
 - Kubernetes access is narrowly wrapped and paired with RBAC-limited manifests.
 - MCP integration is scaffolded as dedicated typed tool servers, matching the PS rubric.
 - The optional Stellar bonus is isolated so it cannot destabilize the remediation loop.
@@ -140,4 +180,7 @@ This prevents the blockchain bonus from becoming a control-path dependency.
 - The Soroban contract invocation is intentionally stubbed until the bonus path is activated.
 - The checkpoint store is local file-backed, not a shared database-backed runtime store.
 - `OOMKilled` now has a real HITL recommendation path, but the actual workload memory patch remains intentionally manual in the first pass.
-- `Pending Pod` still routes through a lighter placeholder path.
+- `Pending Pod` now has a better recommendation path, but still does not mutate cluster resources automatically.
+- Workload ownership is inferred only from pod owner references in the current namespace-scoped view; full owner-chain resolution is not implemented yet.
+- Audit history is exposed through simple file-backed read endpoints, not a database-backed query service.
+- Live Slack E2E still depends on real workspace credentials and a reachable callback URL, although the full backend path is now simulation-tested.

@@ -45,6 +45,7 @@ class SlackClient:
         channel: str | None = None,
         text: str,
         blocks: list[dict[str, Any]] | None = None,
+        thread_ts: str | None = None,
     ) -> dict[str, Any]:
         target_channel = channel or self.default_channel
         self._ensure_client()
@@ -53,12 +54,53 @@ class SlackClient:
                 "ok": False,
                 "stub": True,
                 "channel": target_channel,
+                "ts": None,
                 "message": "Slack client is not configured.",
             }
 
         try:
             response = self._client.chat_postMessage(
                 channel=target_channel,
+                text=text,
+                blocks=blocks,
+                thread_ts=thread_ts,
+            )
+            return dict(response.data)
+        except Exception as exc:
+            return {
+                "ok": False,
+                "stub": False,
+                "channel": target_channel,
+                "ts": None,
+                "message": str(exc),
+            }
+
+    def update_message(
+        self,
+        *,
+        channel: str | None,
+        ts: str | None,
+        text: str,
+        blocks: list[dict[str, Any]] | None = None,
+    ) -> dict[str, Any]:
+        target_channel = channel or self.default_channel
+        if not ts:
+            return self.send_message(channel=target_channel, text=text, blocks=blocks)
+
+        self._ensure_client()
+        if self._client is None:
+            return {
+                "ok": False,
+                "stub": True,
+                "channel": target_channel,
+                "ts": ts,
+                "message": "Slack client is not configured.",
+            }
+
+        try:
+            response = self._client.chat_update(
+                channel=target_channel,
+                ts=ts,
                 text=text,
                 blocks=blocks,
             )
@@ -68,8 +110,79 @@ class SlackClient:
                 "ok": False,
                 "stub": False,
                 "channel": target_channel,
+                "ts": ts,
                 "message": str(exc),
             }
+
+    def render_decision_text(self, *, incident_id: str, approved: bool) -> str:
+        decision = "approved" if approved else "rejected"
+        return f"Incident `{incident_id}` was {decision} by the human approval flow."
+
+    def render_status_blocks(
+        self,
+        *,
+        incident_id: str,
+        title: str,
+        status: str,
+        anomaly_summary: str | None = None,
+        diagnosis: str | None = None,
+        action: str | None = None,
+        result: str | None = None,
+        timeline: list[str] | None = None,
+    ) -> list[dict[str, Any]]:
+        blocks: list[dict[str, Any]] = [
+            {
+                "type": "header",
+                "text": {"type": "plain_text", "text": title[:150]},
+            },
+            {
+                "type": "section",
+                "fields": [
+                    {"type": "mrkdwn", "text": f"*Incident*\n`{incident_id}`"},
+                    {"type": "mrkdwn", "text": f"*Status*\n`{status}`"},
+                ],
+            },
+        ]
+
+        if anomaly_summary:
+            blocks.append(
+                {
+                    "type": "section",
+                    "text": {"type": "mrkdwn", "text": f"*Summary*\n{anomaly_summary}"},
+                }
+            )
+        if diagnosis:
+            blocks.append(
+                {
+                    "type": "section",
+                    "text": {"type": "mrkdwn", "text": f"*Diagnosis*\n{diagnosis[:2800]}"},
+                }
+            )
+        if action or result:
+            fields: list[dict[str, str]] = []
+            if action:
+                fields.append({"type": "mrkdwn", "text": f"*Action*\n`{action}`"})
+            if result:
+                fields.append({"type": "mrkdwn", "text": f"*Result*\n{result[:1000]}"})
+            blocks.append({"type": "section", "fields": fields})
+        if timeline:
+            timeline_text = "\n".join(f"- {item}" for item in timeline[:8])
+            blocks.append(
+                {
+                    "type": "section",
+                    "text": {"type": "mrkdwn", "text": f"*Timeline*\n{timeline_text}"},
+                }
+            )
+
+        blocks.append(
+            {
+                "type": "context",
+                "elements": [
+                    {"type": "mrkdwn", "text": f"K8sWhisperer callback base: `{self.public_base_url}`"}
+                ],
+            }
+        )
+        return blocks
 
     def send_approval_request(
         self,
@@ -151,29 +264,22 @@ class SlackClient:
         action_name = str(plan.get("action", "notify_only"))
         reason = str(plan.get("reason", "No rationale provided."))
         plan_json = json.dumps({"incident_id": incident_id})
-        return [
-            {
-                "type": "section",
-                "text": {
-                    "type": "mrkdwn",
-                    "text": f"*Approval required for* `{incident_id}`\n{summary}",
-                },
-            },
-            {
-                "type": "section",
-                "fields": [
-                    {"type": "mrkdwn", "text": f"*Action*\n`{action_name}`"},
-                    {
-                        "type": "mrkdwn",
-                        "text": f"*Blast Radius*\n`{plan.get('blast_radius', 'unknown')}`",
-                    },
-                    {
-                        "type": "mrkdwn",
-                        "text": f"*Confidence*\n`{plan.get('confidence', 'n/a')}`",
-                    },
-                    {"type": "mrkdwn", "text": f"*Reason*\n{reason}"},
-                ],
-            },
+        blocks = self.render_status_blocks(
+            incident_id=incident_id,
+            title="K8sWhisperer approval required",
+            status="awaiting_human",
+            anomaly_summary=summary,
+            diagnosis=reason,
+            action=action_name,
+            timeline=[
+                "observe completed",
+                "detect completed",
+                "diagnose completed",
+                "plan completed",
+                "waiting for human approval",
+            ],
+        )
+        blocks.extend([
             {
                 "type": "actions",
                 "elements": [
@@ -194,12 +300,17 @@ class SlackClient:
                 ],
             },
             {
-                "type": "context",
-                "elements": [
+                "type": "section",
+                "fields": [
                     {
                         "type": "mrkdwn",
-                        "text": f"FastAPI callback endpoint: `{self.public_base_url}/api/slack/actions`",
-                    }
+                        "text": f"*Blast Radius*\n`{plan.get('blast_radius', 'unknown')}`",
+                    },
+                    {
+                        "type": "mrkdwn",
+                        "text": f"*Confidence*\n`{plan.get('confidence', 'n/a')}`",
+                    },
                 ],
             },
-        ]
+        ])
+        return blocks

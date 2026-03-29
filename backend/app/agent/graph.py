@@ -13,6 +13,7 @@ from ..integrations.llm import LLMClient
 from ..integrations.slack import SlackClient
 from ..models import WhisperState, build_initial_state
 from .checkpointer import PersistentInMemorySaver
+from .incident_tracker import IncidentTracker
 from .nodes import (
     AgentDependencies,
     make_detect_node,
@@ -73,6 +74,7 @@ class AgentRuntime:
         )
         self.checkpointer = PersistentInMemorySaver(settings.checkpoint_store_path)
         self.graph = build_graph(self.deps, self.checkpointer)
+        self.incident_tracker = IncidentTracker(dedup_window_seconds=settings.incident_dedup_window_seconds)
         self._lock = Lock()
         self._latest_states: dict[str, dict[str, Any]] = {}
         self._pending_incidents: set[str] = set()
@@ -84,21 +86,23 @@ class AgentRuntime:
         namespace: str | None = None,
         slack_channel: str | None = None,
         seed_events: list[dict[str, Any]] | None = None,
+        deduplicate: bool = False,
     ) -> dict[str, Any]:
         initial_state = build_initial_state(
             namespace=namespace or self.deps.settings.k8s_namespace,
             slack_channel=slack_channel or self.deps.settings.slack_default_channel,
             seed_events=seed_events,
         )
-        return self._invoke_with_config(initial_state=initial_state)
+        return self._invoke_with_config(initial_state=initial_state, deduplicate=deduplicate)
 
     def resume_incident(self, *, incident_id: str, approved: bool) -> dict[str, Any]:
         config = {"configurable": {"thread_id": incident_id}}
         result = self.graph.invoke(Command(resume={"approved": approved}), config=config)
-        normalized = self._normalize_result(result=result, incident_id=incident_id)
+        normalized = self._normalize_result(result=result, incident_id=incident_id, config=config)
         with self._lock:
             self._latest_states[incident_id] = normalized
             self._pending_incidents.discard(incident_id)
+        self.incident_tracker.hydrate_incident(normalized)
         return normalized
 
     def get_status(self) -> dict[str, Any]:
@@ -108,6 +112,7 @@ class AgentRuntime:
                 "pending_incidents": sorted(self._pending_incidents),
                 "latest_incidents": list(self._latest_states.values())[-10:],
                 "checkpoint_threads": self.checkpointer.list_threads(),
+                "tracked_incidents": self.incident_tracker.snapshot(),
             }
 
     def get_incident(self, incident_id: str) -> dict[str, Any] | None:
@@ -120,20 +125,31 @@ class AgentRuntime:
                     self._pending_incidents.add(incident_id)
                 else:
                     self._pending_incidents.discard(incident_id)
+            self.incident_tracker.hydrate_incident(normalized)
         with self._lock:
             return self._latest_states.get(incident_id)
 
-    def _invoke_with_config(self, *, initial_state: WhisperState) -> dict[str, Any]:
+    def _invoke_with_config(self, *, initial_state: WhisperState, deduplicate: bool) -> dict[str, Any]:
         incident_id = initial_state["incident_id"]
         config = {"configurable": {"thread_id": incident_id}}
         result = self.graph.invoke(initial_state, config=config)
         normalized = self._normalize_result(result=result, incident_id=incident_id, config=config)
+        filtered_anomalies, suppressed_anomalies = self.incident_tracker.filter_anomalies(
+            incident_id=incident_id,
+            anomalies=list(normalized.get("anomalies", [])),
+            deduplicate=deduplicate,
+        )
+        normalized["anomalies"] = filtered_anomalies
+        normalized["suppressed_anomalies"] = suppressed_anomalies
+        if deduplicate and suppressed_anomalies and not filtered_anomalies:
+            normalized["status"] = "suppressed"
         with self._lock:
             self._latest_states[incident_id] = normalized
             if normalized.get("awaiting_human"):
                 self._pending_incidents.add(incident_id)
             else:
                 self._pending_incidents.discard(incident_id)
+        self.incident_tracker.hydrate_incident(normalized)
         return normalized
 
     def _normalize_result(self, *, result: dict[str, Any], incident_id: str, config: dict[str, Any] | None = None) -> dict[str, Any]:
@@ -164,6 +180,7 @@ class AgentRuntime:
                     self._pending_incidents.add(incident_id)
                 else:
                     self._pending_incidents.discard(incident_id)
+            self.incident_tracker.hydrate_incident(normalized)
 
     def _read_checkpoint_state(self, incident_id: str, config: dict[str, Any] | None = None) -> Any | None:
         checkpoint_config = config or {"configurable": {"thread_id": incident_id}}

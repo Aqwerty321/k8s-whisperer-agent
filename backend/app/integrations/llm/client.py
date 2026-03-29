@@ -41,6 +41,7 @@ class LLMClient:
                 continue
             key = (anomaly["anomaly_type"], anomaly["resource_name"])
             if key in seen:
+                self._merge_evidence(anomalies, anomaly)
                 continue
             anomalies.append(anomaly)
             seen.add(key)
@@ -87,9 +88,11 @@ class LLMClient:
                 "target_name": resource_name,
                 "namespace": namespace,
                 "parameters": {
-                    "recommendation": "Increase memory limit on the owning workload by roughly 50% and then restart the pod.",
+                    "recommendation": self._oomkill_recommendation(anomaly),
                     "suggested_memory_factor": 1.5,
-                    "suggested_follow_up": "rollout restart owning deployment or restart the pod after patching limits",
+                    "suggested_follow_up": self._workload_follow_up(anomaly),
+                    "target_workload_kind": anomaly.get("workload_kind", "Pod"),
+                    "target_workload_name": anomaly.get("workload_name", resource_name),
                 },
                 "confidence": 0.65,
                 "blast_radius": "medium",
@@ -101,8 +104,13 @@ class LLMClient:
                 "target_kind": anomaly.get("resource_kind", "Pod"),
                 "target_name": resource_name,
                 "namespace": namespace,
-                "parameters": {},
-                "confidence": 0.55,
+                "parameters": {
+                    "recommendation": self._pending_pod_recommendation(anomaly),
+                    "scheduling_hints": anomaly.get("evidence", []),
+                    "target_workload_kind": anomaly.get("workload_kind", "Pod"),
+                    "target_workload_name": anomaly.get("workload_name", resource_name),
+                },
+                "confidence": 0.6,
                 "blast_radius": "medium",
                 "reason": diagnosis,
                 "requires_human": True,
@@ -266,6 +274,7 @@ class LLMClient:
                 namespace=namespace,
                 summary=message or "Pod could not be scheduled.",
                 confidence=0.76,
+                evidence=[reason or "FailedScheduling", message or "Scheduling constraints prevented placement."],
             )
 
         if "imagepullbackoff" in combined or "errimagepull" in combined:
@@ -306,6 +315,8 @@ class LLMClient:
                 resource_kind="Pod",
                 resource_name=name,
                 namespace=namespace,
+                workload_kind=str(pod.get("owner_kind") or "Pod"),
+                workload_name=str(pod.get("owner_name") or name),
                 summary=f"Pod {name} restarted {restart_count} times.",
                 confidence=0.84,
             )
@@ -317,8 +328,11 @@ class LLMClient:
                 resource_kind="Pod",
                 resource_name=name,
                 namespace=namespace,
+                workload_kind=str(pod.get("owner_kind") or "Pod"),
+                workload_name=str(pod.get("owner_name") or name),
                 summary=f"Pod {name} is still pending.",
                 confidence=0.68,
+                evidence=self._pending_pod_evidence(pod),
             )
 
         if any(reason == "ImagePullBackOff" for reason in waiting_reasons):
@@ -328,6 +342,8 @@ class LLMClient:
                 resource_kind="Pod",
                 resource_name=name,
                 namespace=namespace,
+                workload_kind=str(pod.get("owner_kind") or "Pod"),
+                workload_name=str(pod.get("owner_name") or name),
                 summary=f"Pod {name} is in ImagePullBackOff.",
                 confidence=0.78,
             )
@@ -341,6 +357,8 @@ class LLMClient:
                     resource_kind="Pod",
                     resource_name=name,
                     namespace=namespace,
+                    workload_kind=str(pod.get("owner_kind") or "Pod"),
+                    workload_name=str(pod.get("owner_name") or name),
                     summary=f"Container in pod {name} was OOMKilled.",
                     confidence=0.82,
                 )
@@ -355,8 +373,11 @@ class LLMClient:
         resource_kind: str,
         resource_name: str,
         namespace: str,
+        workload_kind: str | None = None,
+        workload_name: str | None = None,
         summary: str,
         confidence: float,
+        evidence: list[str] | None = None,
     ) -> Anomaly:
         return {
             "anomaly_type": anomaly_type,
@@ -364,10 +385,64 @@ class LLMClient:
             "resource_kind": resource_kind,
             "resource_name": resource_name,
             "namespace": namespace,
+            "workload_kind": workload_kind or resource_kind,
+            "workload_name": workload_name or resource_name,
             "summary": summary,
             "confidence": confidence,
-            "evidence": [summary],
+            "evidence": evidence or [summary],
         }
+
+    def _merge_evidence(self, anomalies: list[Anomaly], incoming: Anomaly) -> None:
+        for anomaly in anomalies:
+            if anomaly.get("anomaly_type") != incoming.get("anomaly_type"):
+                continue
+            if anomaly.get("resource_name") != incoming.get("resource_name"):
+                continue
+
+            current_evidence = list(anomaly.get("evidence", []))
+            for item in incoming.get("evidence", []):
+                if item not in current_evidence:
+                    current_evidence.append(item)
+            anomaly["evidence"] = current_evidence
+            anomaly["confidence"] = max(float(anomaly.get("confidence", 0.0)), float(incoming.get("confidence", 0.0)))
+            return
+
+    def _pending_pod_evidence(self, pod: dict[str, Any]) -> list[str]:
+        evidence = [f"pod phase: {pod.get('phase', 'Unknown')}"]
+        reason = str(pod.get("reason") or "")
+        if reason:
+            evidence.append(f"status reason: {reason}")
+        return evidence
+
+    def _pending_pod_recommendation(self, anomaly: Anomaly) -> str:
+        evidence_text = " ".join(str(item) for item in anomaly.get("evidence", []))
+        lower = evidence_text.lower()
+        workload = self._workload_label(anomaly)
+        if "insufficient memory" in lower:
+            return f"Reduce memory requests for {workload} or free cluster memory in the target namespace before retrying scheduling."
+        if "insufficient cpu" in lower:
+            return f"Reduce CPU requests for {workload} or free CPU capacity before retrying scheduling."
+        if "taint" in lower:
+            return f"Add the required toleration for {workload} or schedule it onto a compatible node pool."
+        if "affinity" in lower or "selector" in lower:
+            return f"Review node selectors or affinity rules for {workload} because they currently exclude all available nodes."
+        return f"Review scheduling events, resource requests, selectors, and tolerations for {workload} before retrying the pod."
+
+    def _oomkill_recommendation(self, anomaly: Anomaly) -> str:
+        workload = self._workload_label(anomaly)
+        return f"Increase the memory limit for {workload} by roughly 50% and then restart the affected pod or rollout."
+
+    def _workload_follow_up(self, anomaly: Anomaly) -> str:
+        workload_kind = str(anomaly.get("workload_kind") or "Pod")
+        workload_name = str(anomaly.get("workload_name") or anomaly.get("resource_name") or "unknown")
+        if workload_kind in {"Deployment", "StatefulSet", "DaemonSet"}:
+            return f"Patch {workload_kind} {workload_name} and trigger a rollout restart if needed."
+        return f"Patch the owning workload for {workload_name} and restart the affected pod if needed."
+
+    def _workload_label(self, anomaly: Anomaly) -> str:
+        workload_kind = str(anomaly.get("workload_kind") or anomaly.get("resource_kind") or "Pod")
+        workload_name = str(anomaly.get("workload_name") or anomaly.get("resource_name") or "unknown")
+        return f"{workload_kind} `{workload_name}`"
 
     def _fallback_diagnosis(
         self,

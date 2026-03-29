@@ -1,0 +1,7 @@
+tunnel: <TUNNEL_ID>
+credentials-file: <HOME_DIR>/.cloudflared/<TUNNEL_ID>.json
+
+ingress:
+  - hostname: slack.aqwerty321.me
+    service: http://localhost:8010
+  - service: http_status:404

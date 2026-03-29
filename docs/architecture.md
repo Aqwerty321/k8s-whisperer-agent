@@ -43,11 +43,46 @@ The scaffold follows the PS1 control loop directly:
 - Safety routes the plan to HITL because the blast radius is not low.
 - Slack approval pauses the graph until the callback resumes the exact graph thread.
 
+## Improved Pending Path
+- `PendingPod` uses `FailedScheduling` events and pod status context together.
+- The evidence is merged into the anomaly record rather than being lost between nodes.
+- The plan now gives a concrete operator recommendation based on the scheduling reason, such as insufficient memory, CPU pressure, selectors, or taints.
+
+## Deduplication
+- Background polling uses a runtime incident tracker to suppress repeated detections for the same anomaly signature.
+- Suppression is keyed by namespace, anomaly type, resource kind, and resource name.
+- Open incidents are suppressed immediately on repeat, and recently resolved incidents are suppressed until the dedup window expires.
+
+## Workload Hints
+- Pod-derived anomalies now carry `workload_kind` and `workload_name` hints from pod owner references when present.
+- ReplicaSet owner names are normalized into Deployment hints when the naming pattern clearly indicates a deployment-generated ReplicaSet.
+- This stays within the current RBAC model because the data comes from the pod object already being read.
+
+## Structured Diagnosis
+- Diagnosis is stored as both a human-readable `diagnosis` string and a `diagnosis_evidence` list.
+- Evidence is assembled from anomaly evidence, the first useful log line, and related describe-style events.
+- The audit log persists both the diagnosis string and the evidence list.
+
+## Demo Inspection Surface
+- Runtime incident listing supports lightweight filtering by status, anomaly type, and search text.
+- Audit history supports filtering by incident ID, anomaly type, decision, and free-text search.
+- This keeps demo inspection simple without introducing a database or separate dashboard.
+
 ## HITL Mechanics
 - `hitl` sends an interactive Slack approval request.
 - The graph pauses via `interrupt()`.
 - FastAPI validates the Slack signature, parses the interactive payload, extracts `incident_id`, and resumes the exact graph thread.
+- FastAPI also updates the Slack incident message immediately when the approval decision arrives.
 - The runtime can recover pending incidents from the persisted checkpoint store even after a process restart.
+- Slack message timestamps are carried in graph state so follow-up updates can target the same incident message when available.
+
+## Audit Query Surface
+- The append-only JSONL audit log remains the source of truth for completed incidents.
+- FastAPI exposes recent-history and per-incident read endpoints directly over that log for demoability.
+
+## Incident Query Surface
+- FastAPI also exposes runtime-backed incident list and summary endpoints.
+- These summary views merge current graph state with audit history so operators can inspect active and completed incidents without reading raw checkpoint data.
 
 ## Polling Mode
 - The app supports one-shot runs and an optional background polling loop.

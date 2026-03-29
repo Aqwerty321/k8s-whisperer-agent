@@ -44,12 +44,12 @@ class BackgroundPoller:
         self._task = None
 
     async def trigger_once(self) -> dict[str, object]:
-        return await asyncio.to_thread(self.runtime.run_once)
+        return await asyncio.to_thread(self.runtime.run_once, deduplicate=True)
 
     async def _run_loop(self) -> None:
         while self._running:
             try:
-                await asyncio.to_thread(self.runtime.run_once)
+                await asyncio.to_thread(self.runtime.run_once, deduplicate=True)
                 self._loop_count += 1
                 self._last_error = None
             except Exception as exc:  # pragma: no cover - defensive runtime guard

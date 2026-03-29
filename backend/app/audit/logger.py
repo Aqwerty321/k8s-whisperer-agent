@@ -26,3 +26,54 @@ class AuditLogger:
                     continue
                 records.append(json.loads(line))
         return records
+
+    def read_recent(self, limit: int = 20) -> list[dict[str, Any]]:
+        records = self.read_all()
+        if limit <= 0:
+            return []
+        return records[-limit:]
+
+    def read_incident(self, incident_id: str) -> list[dict[str, Any]]:
+        return [record for record in self.read_all() if record.get("incident_id") == incident_id]
+
+    def summarize_recent(self, limit: int = 20) -> list[dict[str, Any]]:
+        summaries: list[dict[str, Any]] = []
+        for record in self.read_recent(limit=limit):
+            summaries.append(
+                {
+                    "incident_id": record.get("incident_id"),
+                    "timestamp": record.get("timestamp"),
+                    "anomaly_type": record.get("anomaly_type"),
+                    "decision": record.get("decision"),
+                    "action": record.get("action"),
+                    "result": record.get("result"),
+                }
+            )
+        return summaries
+
+    def query(
+        self,
+        *,
+        limit: int = 20,
+        incident_id: str | None = None,
+        anomaly_type: str | None = None,
+        decision: str | None = None,
+        search: str | None = None,
+    ) -> list[dict[str, Any]]:
+        records = self.read_all()
+        if incident_id:
+            records = [record for record in records if record.get("incident_id") == incident_id]
+        if anomaly_type:
+            records = [record for record in records if record.get("anomaly_type") == anomaly_type]
+        if decision:
+            records = [record for record in records if record.get("decision") == decision]
+        if search:
+            needle = search.lower()
+            records = [
+                record
+                for record in records
+                if needle in json.dumps(record, sort_keys=True).lower()
+            ]
+        if limit <= 0:
+            return []
+        return records[-limit:]

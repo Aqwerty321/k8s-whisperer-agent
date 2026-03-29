@@ -33,6 +33,8 @@ class Anomaly(TypedDict, total=False):
     resource_kind: str
     resource_name: str
     namespace: str
+    workload_kind: str
+    workload_name: str
     summary: str
     confidence: float
     evidence: list[str]
@@ -59,6 +61,7 @@ class LogEntry(TypedDict, total=False):
     action: str
     explanation: str
     diagnosis: str
+    diagnosis_evidence: list[str]
     result: str
     tx_id: str | None
 
@@ -69,12 +72,15 @@ class WhisperState(TypedDict, total=False):
     cluster_state: dict[str, Any]
     events: list[dict[str, Any]]
     anomalies: list[Anomaly]
+    suppressed_anomalies: list[Anomaly]
     diagnosis: str
+    diagnosis_evidence: list[str]
     plan: RemediationPlan | None
     approved: bool | None
     result: str
     audit_log: list[LogEntry]
     slack_channel: str | None
+    slack_message_ts: str | None
     awaiting_human: bool
     error: str | None
     continuous_mode: bool
@@ -104,12 +110,15 @@ def build_initial_state(
         "cluster_state": {},
         "events": list(seed_events or []),
         "anomalies": [],
+        "suppressed_anomalies": [],
         "diagnosis": "",
+        "diagnosis_evidence": [],
         "plan": None,
         "approved": None,
         "result": "",
         "audit_log": [],
         "slack_channel": slack_channel,
+        "slack_message_ts": None,
         "awaiting_human": False,
         "error": None,
         "continuous_mode": continuous_mode,

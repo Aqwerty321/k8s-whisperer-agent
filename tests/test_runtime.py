@@ -40,6 +40,34 @@ class FakeK8sClient(K8sClient):
                 "error": None,
             }
 
+        if self.mode == "pending":
+            return {
+                "pods": [
+                    {
+                        "name": "demo-pending",
+                        "namespace": namespace,
+                        "phase": "Pending",
+                        "reason": "Unschedulable",
+                        "restart_count": 0,
+                        "waiting_reasons": [],
+                        "container_statuses": [],
+                    }
+                ],
+                "events": [
+                    {
+                        "type": "Warning",
+                        "reason": "FailedScheduling",
+                        "message": "0/1 nodes are available: 1 Insufficient memory.",
+                        "namespace": namespace,
+                        "resource_name": "demo-pending",
+                        "resource_kind": "Pod",
+                        "count": 3,
+                        "last_timestamp": "2026-03-29T00:00:00Z",
+                    }
+                ],
+                "error": None,
+            }
+
         return {
             "pods": [
                 {
@@ -65,11 +93,36 @@ class FakeK8sClient(K8sClient):
         }
 
     def get_pod_logs(self, name: str, namespace: str, tail_lines: int = 200) -> str:
+        if self.mode == "pending":
+            return ""
         if self.mode == "oomkill":
             return "memory limit exceeded while processing request"
         return "application crashed with exit code 1"
 
     def describe_pod(self, name: str, namespace: str):
+        if self.mode == "pending":
+            return {
+                "name": name,
+                "namespace": namespace,
+                "pod": {
+                    "name": name,
+                    "namespace": namespace,
+                    "phase": "Pending",
+                    "reason": "Unschedulable",
+                    "restart_count": 0,
+                    "waiting_reasons": [],
+                    "container_statuses": [],
+                },
+                "events": [
+                    {
+                        "type": "Warning",
+                        "reason": "FailedScheduling",
+                        "message": "0/1 nodes are available: 1 Insufficient memory.",
+                    }
+                ],
+                "error": None,
+            }
+
         if self.mode == "oomkill":
             return {
                 "name": name,
@@ -130,10 +183,30 @@ class RecordingSlackClient(SlackClient):
             public_base_url="http://localhost:8000",
         )
         self.messages: list[dict] = []
+        self.updates: list[dict] = []
 
     def send_message(self, *, channel=None, text: str, blocks=None):
-        payload = {"ok": True, "stub": True, "channel": channel or self.default_channel, "text": text, "blocks": blocks}
+        payload = {
+            "ok": True,
+            "stub": True,
+            "channel": channel or self.default_channel,
+            "text": text,
+            "blocks": blocks,
+            "ts": f"stub-{len(self.messages) + 1}",
+        }
         self.messages.append(payload)
+        return payload
+
+    def update_message(self, *, channel=None, ts=None, text: str, blocks=None):
+        payload = {
+            "ok": True,
+            "stub": True,
+            "channel": channel or self.default_channel,
+            "ts": ts,
+            "text": text,
+            "blocks": blocks,
+        }
+        self.updates.append(payload)
         return payload
 
 
@@ -150,6 +223,7 @@ def build_settings(tmp_path: Path) -> Settings:
         k8s_namespace="default",
         poll_interval_seconds=30,
         auto_approve_threshold=0.8,
+        incident_dedup_window_seconds=300,
         prometheus_url=None,
         audit_log_path=str(tmp_path / "audit.jsonl"),
         checkpoint_store_path=str(tmp_path / "checkpoints.pkl"),
@@ -239,5 +313,105 @@ def test_runtime_routes_oomkill_to_hitl_recommendation(tmp_path) -> None:
     assert result["status"] == "awaiting_human"
     assert result["plan"]["action"] == "patch_pod"
     assert result["plan"]["requires_human"] is True
-    assert "Increase memory limit" in result["plan"]["parameters"]["recommendation"]
+    assert "memory limit" in result["plan"]["parameters"]["recommendation"]
     assert slack_client.messages
+
+
+def test_runtime_pending_pod_recommendation_uses_scheduling_evidence(tmp_path) -> None:
+    settings = build_settings(tmp_path)
+    k8s_client = FakeK8sClient()
+    k8s_client.mode = "pending"
+    slack_client = RecordingSlackClient()
+    runtime = AgentRuntime(
+        settings=settings,
+        audit_logger=AuditLogger(settings.audit_log_path),
+        k8s_client=k8s_client,
+        llm_client=LLMClient(api_key=""),
+        slack_client=slack_client,
+    )
+
+    result = runtime.run_once(namespace="default")
+
+    assert result["status"] == "awaiting_human"
+    assert result["plan"]["action"] == "notify_only"
+    assert "memory" in result["plan"]["parameters"]["recommendation"].lower()
+    assert any("Insufficient memory" in item for item in result["anomalies"][0]["evidence"])
+
+
+def test_runtime_deduplicates_repeat_incidents_for_poller_mode(tmp_path) -> None:
+    settings = build_settings(tmp_path)
+    runtime = AgentRuntime(
+        settings=settings,
+        audit_logger=AuditLogger(settings.audit_log_path),
+        k8s_client=FakeK8sClient(),
+        llm_client=LLMClient(api_key=""),
+        slack_client=RecordingSlackClient(),
+    )
+
+    first = runtime.run_once(namespace="default", deduplicate=True)
+    second = runtime.run_once(namespace="default", deduplicate=True)
+
+    assert first["status"] == "completed"
+    assert second["status"] == "suppressed"
+    assert second["anomalies"] == []
+    assert len(second["suppressed_anomalies"]) == 1
+
+
+def test_runtime_maps_owner_hints_from_pod_metadata(tmp_path) -> None:
+    settings = build_settings(tmp_path)
+    k8s_client = FakeK8sClient()
+    k8s_client.mode = "oomkill"
+    k8s_client.get_cluster_snapshot = lambda namespace: {
+        "pods": [
+            {
+                "name": "demo-oomkill",
+                "namespace": namespace,
+                "phase": "Running",
+                "reason": None,
+                "owner_kind": "Deployment",
+                "owner_name": "demo-api",
+                "restart_count": 1,
+                "waiting_reasons": [],
+                "container_statuses": [
+                    {
+                        "name": "memory-hog",
+                        "restart_count": 1,
+                        "waiting_reason": None,
+                        "terminated_reason": "OOMKilled",
+                        "ready": False,
+                    }
+                ],
+            }
+        ],
+        "events": [],
+        "error": None,
+    }
+    runtime = AgentRuntime(
+        settings=settings,
+        audit_logger=AuditLogger(settings.audit_log_path),
+        k8s_client=k8s_client,
+        llm_client=LLMClient(api_key=""),
+        slack_client=RecordingSlackClient(),
+    )
+
+    result = runtime.run_once(namespace="default")
+
+    assert result["anomalies"][0]["workload_kind"] == "Deployment"
+    assert result["anomalies"][0]["workload_name"] == "demo-api"
+    assert "Deployment `demo-api`" in result["plan"]["parameters"]["recommendation"]
+
+
+def test_runtime_records_structured_diagnosis_evidence(tmp_path) -> None:
+    settings = build_settings(tmp_path)
+    runtime = AgentRuntime(
+        settings=settings,
+        audit_logger=AuditLogger(settings.audit_log_path),
+        k8s_client=FakeK8sClient(),
+        llm_client=LLMClient(api_key=""),
+        slack_client=RecordingSlackClient(),
+    )
+
+    result = runtime.run_once(namespace="default")
+
+    assert result["diagnosis_evidence"]
+    assert any(item.startswith("logs:") or item.startswith("event ") for item in result["diagnosis_evidence"])
