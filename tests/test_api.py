@@ -101,14 +101,17 @@ def test_slack_action_updates_existing_incident_message() -> None:
     with TestClient(app) as client:
         client.app.state.slack_client.signing_secret = "test-secret"
         client.app.state.slack_client.update_message = Mock(return_value={"ok": True, "ts": "stub-approval-1"})
+        client.app.state.runtime.resume_incident = Mock(return_value={"incident_id": "incident-hitl-1", "status": "completed"})
         client.app.state.runtime._latest_states["incident-hitl-1"] = {
             "incident_id": "incident-hitl-1",
             "slack_message_ts": "stub-approval-1",
+            "awaiting_human": True,
         }
         response = client.post("/api/slack/actions", content=body, headers=headers)
 
     assert response.status_code == 200
     client.app.state.slack_client.update_message.assert_called_once()
+    client.app.state.runtime.resume_incident.assert_called_once_with(incident_id="incident-hitl-1", approved=True)
 
 
 def test_slack_action_is_idempotent_after_incident_completion() -> None:

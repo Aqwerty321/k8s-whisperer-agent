@@ -55,7 +55,7 @@ def test_recommend_next_step_points_to_pending_story_when_missing() -> None:
                 "status": "completed",
                 "anomaly_type": "OOMKilled",
                 "approved": True,
-                "result": "Patched Deployment default/demo-oomkill. Rollout: ok",
+                "result": "Patch action requires human implementation. Recommendation: Increase memory.",
             },
             {
                 "incident_id": "incident-3",
@@ -80,7 +80,7 @@ def test_recommend_next_step_prunes_when_recent_window_is_full() -> None:
             "anomaly_type": "CrashLoopBackOff" if index == 0 else "PendingPod" if index == 4 else "OOMKilled",
             "approved": True if index == 1 else False if index == 2 else None,
             "result": (
-                "Patched Deployment default/demo-oomkill. Rollout: ok"
+                "Patch action requires human implementation. Recommendation: Increase memory."
                 if index == 1
                 else "Operator rejected remediation. No cluster mutation was executed."
                 if index == 2
@@ -97,3 +97,40 @@ def test_recommend_next_step_prunes_when_recent_window_is_full() -> None:
     )
 
     assert decision["next_step"] == "make demo-prune"
+
+
+def test_recommend_next_step_accepts_real_patched_oomkill_story_too() -> None:
+    decision = recommend_next_step(
+        backend_healthy=True,
+        incidents=[
+            {
+                "incident_id": "incident-1",
+                "status": "completed",
+                "anomaly_type": "CrashLoopBackOff",
+            },
+            {
+                "incident_id": "incident-2",
+                "status": "completed",
+                "anomaly_type": "OOMKilled",
+                "approved": True,
+                "result": "Patched Deployment default/demo-oomkill. Rollout: ok",
+            },
+            {
+                "incident_id": "incident-3",
+                "status": "completed",
+                "anomaly_type": "OOMKilled",
+                "approved": False,
+                "result": "Operator rejected remediation. No cluster mutation was executed.",
+            },
+            {
+                "incident_id": "incident-4",
+                "status": "completed",
+                "anomaly_type": "PendingPod",
+                "result": "Recommendation recorded.",
+            },
+        ],
+        audits=[{"decision": "approved"}, {"decision": "rejected"}],
+        oomkill_limit="64Mi",
+    )
+
+    assert decision["next_step"] == "make demo-snapshot"

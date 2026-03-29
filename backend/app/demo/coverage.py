@@ -19,7 +19,7 @@ def build_demo_coverage(
     oomkill_approved = any(
         incident.get("anomaly_type") == "OOMKilled"
         and incident.get("approved") is True
-        and "Patched Deployment" in str(incident.get("result") or "")
+        and _is_successful_approved_oomkill_result(str(incident.get("result") or ""))
         for incident in visible_incidents
     )
     oomkill_rejected = any(
@@ -69,6 +69,13 @@ def _is_stale_rejected_noise(incident: dict[str, Any]) -> bool:
         incident.get("approved") is False
         and incident.get("status") == "completed"
         and not str(incident.get("result") or "").strip()
+    )
+
+
+def _is_successful_approved_oomkill_result(result: str) -> bool:
+    return (
+        "Patch action requires human implementation" in result
+        or "Patched Deployment" in result
     )
 
 

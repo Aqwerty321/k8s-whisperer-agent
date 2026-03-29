@@ -66,7 +66,7 @@ def recommend_next_step(
             "state": "missing_approved_oomkill",
             "next_step": "bash scripts/demo_incident.sh oomkill | jq",
             "backup_step": "Approve the newest Slack card or run bash scripts/approve_incident.sh",
-            "why": "The recent view does not show a successful approved OOMKilled Deployment patch.",
+            "why": "The recent view does not show a successful approved OOMKilled human-in-the-loop story yet.",
         }
 
     if not coverage["covered_stories"]["oomkill_rejected"]:
