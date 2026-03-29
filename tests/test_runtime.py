@@ -810,3 +810,125 @@ def test_runtime_escalates_node_not_ready_without_cluster_mutation(tmp_path) -> 
     assert not k8s_client.deleted
     assert not k8s_client.patched_workloads
     assert len(slack_client.messages) == 1
+
+
+def test_runtime_prefers_live_oomkill_over_stale_backoff_event(tmp_path) -> None:
+    settings = build_settings(tmp_path)
+    k8s_client = FakeK8sClient()
+    k8s_client.mode = "oomkill"
+    k8s_client.get_cluster_snapshot = lambda namespace: {
+        "pods": [
+            {
+                "name": "demo-oomkill-live",
+                "namespace": namespace,
+                "phase": "Running",
+                "reason": None,
+                "owner_kind": "Deployment",
+                "owner_name": "demo-oomkill",
+                "restart_count": 23,
+                "waiting_reasons": [],
+                "container_statuses": [
+                    {
+                        "name": "memory-hog",
+                        "restart_count": 23,
+                        "waiting_reason": None,
+                        "terminated_reason": "OOMKilled",
+                        "ready": False,
+                    }
+                ],
+            }
+        ],
+        "nodes": [],
+        "events": [
+            {
+                "type": "Warning",
+                "reason": "BackOff",
+                "message": "Back-off restarting failed container demo in pod deleted-pod_default(uid)",
+                "namespace": namespace,
+                "resource_name": "deleted-pod",
+                "resource_kind": "Pod",
+                "count": 9,
+                "last_timestamp": "2026-03-29T00:00:00Z",
+            }
+        ],
+        "error": None,
+    }
+    runtime = AgentRuntime(
+        settings=settings,
+        audit_logger=AuditLogger(settings.audit_log_path),
+        k8s_client=k8s_client,
+        llm_client=LLMClient(api_key=""),
+        slack_client=RecordingSlackClient(),
+    )
+
+    result = runtime.run_once(namespace="default")
+
+    assert result["anomalies"]
+    assert result["anomalies"][0]["anomaly_type"] == "OOMKilled"
+    assert result["anomalies"][0]["resource_name"] == "demo-oomkill-live"
+
+
+def test_runtime_prioritizes_oomkill_over_pending_without_seed_filters(tmp_path) -> None:
+    settings = build_settings(tmp_path)
+    k8s_client = FakeK8sClient()
+    k8s_client.get_cluster_snapshot = lambda namespace: {
+        "pods": [
+            {
+                "name": "demo-oomkill-live",
+                "namespace": namespace,
+                "phase": "Running",
+                "reason": None,
+                "owner_kind": "Deployment",
+                "owner_name": "demo-oomkill",
+                "restart_count": 23,
+                "waiting_reasons": ["CrashLoopBackOff"],
+                "container_statuses": [
+                    {
+                        "name": "memory-hog",
+                        "restart_count": 23,
+                        "waiting_reason": "CrashLoopBackOff",
+                        "terminated_reason": "OOMKilled",
+                        "ready": False,
+                    }
+                ],
+            },
+            {
+                "name": "demo-pending",
+                "namespace": namespace,
+                "phase": "Pending",
+                "reason": "Unschedulable",
+                "age_seconds": 900,
+                "restart_count": 0,
+                "waiting_reasons": [],
+                "container_statuses": [],
+            },
+        ],
+        "nodes": [],
+        "events": [
+            {
+                "type": "Warning",
+                "reason": "FailedScheduling",
+                "message": "0/1 nodes are available: 1 Insufficient memory.",
+                "namespace": namespace,
+                "resource_name": "demo-pending",
+                "resource_kind": "Pod",
+                "count": 4,
+                "last_timestamp": "2026-03-29T00:00:00Z",
+            }
+        ],
+        "error": None,
+    }
+    runtime = AgentRuntime(
+        settings=settings,
+        audit_logger=AuditLogger(settings.audit_log_path),
+        k8s_client=k8s_client,
+        llm_client=LLMClient(api_key=""),
+        slack_client=RecordingSlackClient(),
+    )
+
+    result = runtime.run_once(namespace="default")
+
+    assert result["anomalies"]
+    assert len(result["anomalies"]) == 1
+    assert result["anomalies"][0]["anomaly_type"] == "OOMKilled"
+    assert result["anomalies"][0]["resource_name"] == "demo-oomkill-live"

@@ -58,6 +58,8 @@ def make_detect_node(deps: AgentDependencies):
             ]
             if filtered:
                 anomalies = _prioritize_anomalies(filtered)
+        else:
+            anomalies = _prioritize_anomalies(anomalies)
         return {"anomalies": anomalies}
 
     return detect_node
@@ -414,11 +416,11 @@ def _prioritize_anomalies(anomalies: list[dict[str, object]]) -> list[dict[str, 
 
     priority = {
         "NodeNotReady": 0,
-        "OOMKilled": 0,
-        "CrashLoopBackOff": 1,
-        "PendingPod": 2,
-        "ImagePullBackOff": 3,
-        "EvictedPod": 4,
+        "OOMKilled": 1,
+        "CrashLoopBackOff": 2,
+        "PendingPod": 3,
+        "ImagePullBackOff": 4,
+        "EvictedPod": 5,
     }
     sorted_anomalies = sorted(
         anomalies,

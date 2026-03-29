@@ -38,7 +38,9 @@ class LLMClient:
             if anomaly is None:
                 continue
             pod = pods_by_name.get(str(anomaly.get("resource_name") or ""))
-            if pod is not None:
+            if str(anomaly.get("resource_kind") or "") == "Pod":
+                if pod is None:
+                    continue
                 self._enrich_anomaly_with_pod_owner(anomaly, pod)
             key = (anomaly["anomaly_type"], anomaly["resource_name"])
             if key in seen:
@@ -68,7 +70,7 @@ class LLMClient:
             anomalies.append(anomaly)
             seen.add(key)
 
-        return anomalies
+        return self._drop_shadowed_anomalies(anomalies)
 
     def diagnose(
         self,
@@ -331,6 +333,21 @@ class LLMClient:
         restart_count = int(pod.get("restart_count") or 0)
         waiting_reasons = [str(reason) for reason in pod.get("waiting_reasons", [])]
 
+        for status in pod.get("container_statuses", []):
+            terminated_reason = str(status.get("terminated_reason") or "")
+            if terminated_reason == "OOMKilled":
+                return self._build_anomaly(
+                    anomaly_type="OOMKilled",
+                    severity="high",
+                    resource_kind="Pod",
+                    resource_name=name,
+                    namespace=namespace,
+                    workload_kind=str(pod.get("owner_kind") or "Pod"),
+                    workload_name=str(pod.get("owner_name") or name),
+                    summary=f"Container in pod {name} was OOMKilled.",
+                    confidence=0.82,
+                )
+
         if restart_count > 3:
             return self._build_anomaly(
                 anomaly_type="CrashLoopBackOff",
@@ -371,22 +388,25 @@ class LLMClient:
                 confidence=0.78,
             )
 
-        for status in pod.get("container_statuses", []):
-            terminated_reason = str(status.get("terminated_reason") or "")
-            if terminated_reason == "OOMKilled":
-                return self._build_anomaly(
-                    anomaly_type="OOMKilled",
-                    severity="high",
-                    resource_kind="Pod",
-                    resource_name=name,
-                    namespace=namespace,
-                    workload_kind=str(pod.get("owner_kind") or "Pod"),
-                    workload_name=str(pod.get("owner_name") or name),
-                    summary=f"Container in pod {name} was OOMKilled.",
-                    confidence=0.82,
-                )
-
         return None
+
+    def _drop_shadowed_anomalies(self, anomalies: list[Anomaly]) -> list[Anomaly]:
+        oomkilled_resources = {
+            str(anomaly.get("resource_name") or "")
+            for anomaly in anomalies
+            if anomaly.get("anomaly_type") == "OOMKilled"
+        }
+        if not oomkilled_resources:
+            return anomalies
+
+        return [
+            anomaly
+            for anomaly in anomalies
+            if not (
+                anomaly.get("anomaly_type") == "CrashLoopBackOff"
+                and str(anomaly.get("resource_name") or "") in oomkilled_resources
+            )
+        ]
 
     def _node_to_anomaly(self, node: dict[str, Any], *, namespace: str) -> Anomaly | None:
         ready_status = str(node.get("ready_status") or "")
