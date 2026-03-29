@@ -1,0 +1,260 @@
+from __future__ import annotations
+
+from dataclasses import dataclass
+
+from langgraph.types import interrupt
+
+from ..audit import AuditLogger
+from ..config import Settings
+from ..integrations.k8s import K8sClient
+from ..integrations.llm import LLMClient
+from ..integrations.slack import SlackClient
+from ..models import LogEntry, WhisperState, current_timestamp, latest_anomaly
+from .safety import is_auto_approvable
+
+
+@dataclass(frozen=True)
+class AgentDependencies:
+    settings: Settings
+    audit_logger: AuditLogger
+    k8s_client: K8sClient
+    llm_client: LLMClient
+    slack_client: SlackClient
+
+
+def make_observe_node(deps: AgentDependencies):
+    def observe_node(state: WhisperState) -> WhisperState:
+        namespace = state.get("namespace") or deps.settings.k8s_namespace
+        snapshot = deps.k8s_client.get_cluster_snapshot(namespace)
+        seeded_events = list(state.get("events", []))
+        live_events = list(snapshot.get("events", []))
+        combined_events = seeded_events + [event for event in live_events if event not in seeded_events]
+        return {
+            "namespace": namespace,
+            "cluster_state": snapshot,
+            "events": combined_events,
+            "approved": state.get("approved"),
+            "error": snapshot.get("error"),
+        }
+
+    return observe_node
+
+
+def make_detect_node(deps: AgentDependencies):
+    def detect_node(state: WhisperState) -> WhisperState:
+        namespace = state.get("namespace") or deps.settings.k8s_namespace
+        anomalies = deps.llm_client.classify_events(
+            events=state.get("events", []),
+            cluster_state=state.get("cluster_state", {}),
+            namespace=namespace,
+        )
+        return {"anomalies": anomalies}
+
+    return detect_node
+
+
+def make_diagnose_node(deps: AgentDependencies):
+    def diagnose_node(state: WhisperState) -> WhisperState:
+        anomaly = latest_anomaly(state)
+        if anomaly is None:
+            return {"diagnosis": "No anomaly was available for diagnosis."}
+
+        pod_name = anomaly.get("resource_name", "unknown")
+        namespace = anomaly.get("namespace") or state.get("namespace") or deps.settings.k8s_namespace
+        logs = deps.k8s_client.get_pod_logs(name=pod_name, namespace=namespace)
+        pod_description = deps.k8s_client.describe_pod(name=pod_name, namespace=namespace)
+        diagnosis = deps.llm_client.diagnose(
+            anomaly=anomaly,
+            logs=logs,
+            pod_description=pod_description,
+        )
+        return {"diagnosis": diagnosis}
+
+    return diagnose_node
+
+
+def make_plan_node(deps: AgentDependencies):
+    def plan_node(state: WhisperState) -> WhisperState:
+        anomaly = latest_anomaly(state)
+        if anomaly is None:
+            return {"plan": None}
+        plan = deps.llm_client.plan_remediation(
+            anomaly=anomaly,
+            diagnosis=state.get("diagnosis", ""),
+        )
+        return {"plan": plan}
+
+    return plan_node
+
+
+def make_safety_gate_node(deps: AgentDependencies):
+    def safety_gate_node(state: WhisperState) -> WhisperState:
+        plan = state.get("plan")
+        if not plan:
+            return {"approved": False, "awaiting_human": False}
+
+        auto_approved = is_auto_approvable(
+            plan,
+            threshold=deps.settings.auto_approve_threshold,
+        )
+        if auto_approved:
+            return {"approved": True, "awaiting_human": False}
+        return {"approved": None, "awaiting_human": True}
+
+    return safety_gate_node
+
+
+def make_hitl_node(deps: AgentDependencies):
+    def hitl_node(state: WhisperState) -> WhisperState:
+        plan = state.get("plan") or {}
+        anomaly = latest_anomaly(state)
+        summary = anomaly.get("summary", "Incident requires human review.") if anomaly else "Incident requires human review."
+        slack_response = deps.slack_client.send_approval_request(
+            channel=state.get("slack_channel") or deps.settings.slack_default_channel,
+            incident_id=state["incident_id"],
+            summary=summary,
+            plan=plan,
+        )
+        decision = interrupt(
+            {
+                "incident_id": state["incident_id"],
+                "summary": summary,
+                "plan": plan,
+                "slack_response": slack_response,
+            }
+        )
+        approved = bool((decision or {}).get("approved"))
+        return {"approved": approved, "awaiting_human": False}
+
+    return hitl_node
+
+
+def make_execute_node(deps: AgentDependencies):
+    def execute_node(state: WhisperState) -> WhisperState:
+        plan = state.get("plan") or {}
+        action = plan.get("action", "notify_only")
+        target_name = str(plan.get("target_name") or "unknown")
+        namespace = str(plan.get("namespace") or state.get("namespace") or deps.settings.k8s_namespace)
+
+        if not state.get("approved") and bool(plan.get("requires_human")):
+            return {"result": "Execution skipped because the remediation was not approved."}
+
+        if action == "restart_pod":
+            outcome = deps.k8s_client.delete_pod(name=target_name, namespace=namespace)
+            verification = deps.k8s_client.verify_pod_recovery(
+                name=target_name,
+                namespace=namespace,
+                timeout_seconds=deps.settings.verify_timeout_seconds,
+            )
+            result = (
+                f"Restarted pod via delete request. Outcome: {outcome.get('message')}. "
+                f"Verification: {verification.get('message')}"
+            )
+            if not outcome.get("ok"):
+                return {"result": outcome.get("message", result), "error": outcome.get("message")}
+            if not verification.get("recovered"):
+                return {"result": result, "error": verification.get("message")}
+            return {"result": result, "error": None}
+
+        if action == "delete_pod":
+            outcome = deps.k8s_client.delete_pod(name=target_name, namespace=namespace)
+            verification = deps.k8s_client.verify_pod_recovery(
+                name=target_name,
+                namespace=namespace,
+                expected_absent=True,
+                timeout_seconds=deps.settings.verify_timeout_seconds,
+            )
+            result = (
+                f"Delete request outcome: {outcome.get('message')}. "
+                f"Verification: {verification.get('message')}"
+            )
+            if not outcome.get("ok"):
+                return {"result": outcome.get("message", result), "error": outcome.get("message")}
+            return {"result": result, "error": None if verification.get("recovered") else verification.get("message")}
+
+        if action == "patch_pod":
+            patch_body = plan.get("parameters", {}).get("patch")
+            if isinstance(patch_body, dict):
+                outcome = deps.k8s_client.patch_pod(
+                    name=target_name,
+                    namespace=namespace,
+                    patch=patch_body,
+                )
+                return {
+                    "result": outcome.get("message", "Patch pod action completed."),
+                    "error": None if outcome.get("ok") else outcome.get("message"),
+                }
+
+            recommendation = str(plan.get("parameters", {}).get("recommendation") or "Patch recommendation is required before execution.")
+            return {
+                "result": f"Patch action requires human implementation. Recommendation: {recommendation}",
+                "error": None,
+            }
+
+        if action == "notify_only":
+            return {
+                "result": "No cluster mutation executed. Incident was summarized for operator review.",
+                "error": None,
+            }
+
+        if action == "collect_more_evidence":
+            return {
+                "result": "No cluster mutation executed. Additional evidence collection is required.",
+                "error": None,
+            }
+
+        if action == "escalate_to_human":
+            return {
+                "result": "Escalated to a human operator. No automated cluster mutation was executed.",
+                "error": None,
+            }
+
+        return {"result": f"Action `{action}` is not implemented in the scaffold.", "error": None}
+
+    return execute_node
+
+
+def make_explain_log_node(deps: AgentDependencies):
+    def explain_log_node(state: WhisperState) -> WhisperState:
+        anomaly = latest_anomaly(state)
+        explanation = deps.llm_client.explain(
+            anomaly=anomaly,
+            diagnosis=state.get("diagnosis", ""),
+            plan=state.get("plan"),
+            approved=state.get("approved"),
+            result=state.get("result", ""),
+        )
+        entry: LogEntry = {
+            "timestamp": current_timestamp(),
+            "incident_id": state["incident_id"],
+            "namespace": state.get("namespace", deps.settings.k8s_namespace),
+            "anomaly_type": anomaly.get("anomaly_type", "Unknown") if anomaly else "Unknown",
+            "decision": _decision_label(state),
+            "action": (state.get("plan") or {}).get("action", "notify_only"),
+            "explanation": explanation,
+            "diagnosis": state.get("diagnosis", ""),
+            "result": state.get("result", ""),
+            "tx_id": state.get("attestation_tx_id"),
+        }
+        deps.audit_logger.log(entry)
+        deps.slack_client.send_message(
+            channel=state.get("slack_channel") or deps.settings.slack_default_channel,
+            text=explanation,
+        )
+        return {
+            "explanation": explanation,
+            "audit_log": state.get("audit_log", []) + [entry],
+        }
+
+    return explain_log_node
+
+
+def _decision_label(state: WhisperState) -> str:
+    plan = state.get("plan") or {}
+    if state.get("approved") is True and bool(plan.get("requires_human")):
+        return "approved"
+    if state.get("approved") is False:
+        return "rejected"
+    if state.get("approved") is True:
+        return "auto_approved"
+    return "not_required_or_pending"

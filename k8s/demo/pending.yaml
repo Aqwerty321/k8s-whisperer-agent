@@ -1,0 +1,19 @@
+apiVersion: v1
+kind: Pod
+metadata:
+  name: demo-pending
+  namespace: default
+  labels:
+    app: demo-pending
+spec:
+  containers:
+    - name: impossible
+      image: busybox:1.36
+      command: ["/bin/sh", "-c", "sleep 3600"]
+      resources:
+        requests:
+          cpu: "32"
+          memory: "64Gi"
+        limits:
+          cpu: "32"
+          memory: "64Gi"
