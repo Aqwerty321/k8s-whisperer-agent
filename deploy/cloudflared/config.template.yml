@@ -3,5 +3,9 @@ credentials-file: <HOME_DIR>/.cloudflared/<TUNNEL_ID>.json
 
 ingress:
   - hostname: slack.aqwerty321.me
+    path: ^/health$
+    service: http://localhost:8010
+  - hostname: slack.aqwerty321.me
+    path: ^/api/slack/actions$
     service: http://localhost:8010
   - service: http_status:404
