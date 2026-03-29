@@ -9,6 +9,7 @@ from fastapi.responses import PlainTextResponse
 from pydantic import BaseModel, Field
 
 from ..attestation import StellarAttestor, hash_incident_record
+from ..demo import build_demo_coverage
 
 
 class RunOnceRequest(BaseModel):
@@ -45,9 +46,21 @@ async def health(request: Request) -> dict[str, Any]:
 
 @router.get("/api/status")
 async def status(request: Request) -> dict[str, Any]:
+    runtime_status = request.app.state.runtime.get_status()
+    audits = request.app.state.audit_logger.read_recent(limit=10)
+    oomkill_limit = request.app.state.k8s_client.get_workload_memory_limit(
+        kind="Deployment",
+        name="demo-oomkill",
+        namespace=request.app.state.settings.k8s_namespace,
+    )
     return {
-        **request.app.state.runtime.get_status(),
+        **runtime_status,
         "poller": request.app.state.poller.get_status(),
+        "demo_coverage": build_demo_coverage(
+            incidents=list(runtime_status.get("latest_incidents", [])),
+            audits=audits,
+            oomkill_limit=oomkill_limit,
+        ),
     }
 
 

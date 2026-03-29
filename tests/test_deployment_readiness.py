@@ -14,6 +14,8 @@ def test_backend_manifest_uses_service_account_and_health_probes() -> None:
     manifest = Path("k8s/backend.yaml").read_text(encoding="utf-8")
 
     assert "serviceAccountName: k8s-whisperer-sa" in manifest
+    assert 'name: ALLOW_WORKLOAD_PATCHES' in manifest
+    assert 'value: "false"' in manifest
     assert "readinessProbe:" in manifest
     assert "livenessProbe:" in manifest
     assert "name: k8s-whisperer-secrets" in manifest
@@ -100,12 +102,14 @@ def test_demo_snapshot_script_reports_health_incidents_and_audit() -> None:
     script = Path("scripts/demo_snapshot.sh").read_text(encoding="utf-8")
 
     assert "/health" in script
+    assert "/api/status" in script
     assert "/api/incidents" in script
     assert "/api/audit" in script
     assert "tracked_incidents" in script
     assert "INCIDENT_LIMIT" in script
     assert "AUDIT_LIMIT" in script
     assert "== Scoreboard ==" in script
+    assert "== Demo Coverage ==" in script
     assert "by_status" in script
     assert "by_decision" in script
 
@@ -125,12 +129,13 @@ def test_oomkill_demo_uses_deployment_workload() -> None:
     assert "72 * 1024 * 1024" in manifest
 
 
-def test_rbac_includes_deployment_patch_permissions() -> None:
+def test_rbac_stays_pod_scoped_by_default() -> None:
     manifest = Path("k8s/rbac.yaml").read_text(encoding="utf-8")
 
-    assert 'apiGroups: ["apps"]' in manifest
-    assert 'resources: ["deployments"]' in manifest
-    assert 'verbs: ["get", "list", "watch", "patch"]' in manifest
+    assert 'resources: ["pods"]' in manifest
+    assert 'resources: ["pods/log"]' in manifest
+    assert 'resources: ["events"]' in manifest
+    assert 'resources: ["deployments"]' not in manifest
 
 
 def test_rubric_mapping_doc_mentions_safety_and_demoability() -> None:

@@ -252,6 +252,26 @@ class K8sClient:
             "resource": last_status,
         }
 
+    def get_workload_memory_limit(self, *, kind: str, name: str, namespace: str) -> str | None:
+        self._ensure_client()
+        if self._apps_v1 is None:
+            return None
+
+        try:
+            normalized_kind = kind.lower()
+            if normalized_kind != "deployment":
+                return None
+            deployment = self._apps_v1.read_namespaced_deployment(name=name, namespace=namespace)
+            containers = getattr(getattr(getattr(deployment, "spec", None), "template", None), "spec", None)
+            container_list = getattr(containers, "containers", None) or []
+            if not container_list:
+                return None
+            resources = getattr(container_list[0], "resources", None)
+            limits = getattr(resources, "limits", None) or {}
+            return limits.get("memory")
+        except Exception:
+            return None
+
     def _format_error(self, exc: Exception) -> str:
         status = getattr(exc, "status", None)
         reason = getattr(exc, "reason", None)

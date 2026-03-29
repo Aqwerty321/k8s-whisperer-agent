@@ -62,6 +62,8 @@ spec:
               value: /app/runtime/audit/audit.jsonl
             - name: CHECKPOINT_STORE_PATH
               value: /app/runtime/data/langgraph-checkpoints.pkl
+            - name: ALLOW_WORKLOAD_PATCHES
+              value: "false"
             - name: SLACK_BOT_TOKEN
               valueFrom:
                 secretKeyRef:

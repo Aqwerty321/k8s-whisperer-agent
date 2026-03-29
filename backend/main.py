@@ -18,7 +18,11 @@ async def lifespan(app: FastAPI):
     settings = get_settings()
     audit_logger = AuditLogger(settings.audit_log_path)
     k8s_client = K8sClient(kubeconfig=settings.kubeconfig)
-    llm_client = LLMClient(api_key=settings.gemini_api_key, model=settings.gemini_model)
+    llm_client = LLMClient(
+        api_key=settings.gemini_api_key,
+        model=settings.gemini_model,
+        allow_workload_patches=settings.allow_workload_patches,
+    )
     slack_client = SlackClient(
         bot_token=settings.slack_bot_token,
         signing_secret=settings.slack_signing_secret,

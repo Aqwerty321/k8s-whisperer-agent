@@ -7,9 +7,10 @@ from ...models import Anomaly, RemediationPlan
 
 
 class LLMClient:
-    def __init__(self, *, api_key: str, model: str = "gemini-1.5-flash") -> None:
+    def __init__(self, *, api_key: str, model: str = "gemini-1.5-flash", allow_workload_patches: bool = False) -> None:
         self.api_key = api_key
         self.model = model
+        self.allow_workload_patches = allow_workload_patches
         self._client: Any | None = None
 
     def is_configured(self) -> bool:
@@ -463,6 +464,8 @@ class LLMClient:
         return f"Increase the memory limit for {workload} by roughly 50% and then restart the affected pod or rollout."
 
     def _oomkill_patch(self, anomaly: Anomaly) -> dict[str, Any] | None:
+        if not self.allow_workload_patches:
+            return None
         workload_kind = str(anomaly.get("workload_kind") or "Pod")
         if workload_kind != "Deployment":
             return None

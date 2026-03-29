@@ -34,6 +34,7 @@ class Settings(BaseSettings):
     incident_dedup_window_seconds: int = 300
     checkpoint_store_path: str = "data/langgraph-checkpoints.pkl"
     verify_timeout_seconds: int = 20
+    allow_workload_patches: bool = False
 
     prometheus_url: str | None = "http://localhost:9090"
     audit_log_path: str = "audit_log/audit.jsonl"
