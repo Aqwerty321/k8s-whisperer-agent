@@ -60,3 +60,31 @@ def test_serialize_node_extracts_ready_condition_details() -> None:
     assert serialized["ready_reason"] == "KubeletNotReady"
     assert serialized["ready_message"] == "container runtime is down"
     assert serialized["unschedulable"] is True
+    assert serialized["conditions"][0]["type"] == "Ready"
+
+
+def test_serialize_pod_prefers_current_terminated_state_reason() -> None:
+    client = K8sClient()
+    pod = SimpleNamespace(
+        metadata=SimpleNamespace(name="demo", namespace="default", creation_timestamp=None, owner_references=[]),
+        status=SimpleNamespace(
+            phase="Running",
+            reason=None,
+            container_statuses=[
+                SimpleNamespace(
+                    name="demo",
+                    restart_count=1,
+                    ready=False,
+                    state=SimpleNamespace(
+                        waiting=None,
+                        terminated=SimpleNamespace(reason="OOMKilled"),
+                    ),
+                    last_state=SimpleNamespace(terminated=None),
+                )
+            ],
+        ),
+    )
+
+    serialized = client._serialize_pod(pod)
+
+    assert serialized["container_statuses"][0]["terminated_reason"] == "OOMKilled"

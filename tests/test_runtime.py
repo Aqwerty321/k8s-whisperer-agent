@@ -14,6 +14,7 @@ class FakeK8sClient(K8sClient):
         self.deleted: list[tuple[str, str]] = []
         self.patched_workloads: list[tuple[str, str, str, dict]] = []
         self.mode = "crashloop"
+        self.workload_pods: list[dict] = []
 
     def get_cluster_snapshot(self, namespace: str):
         if self.mode == "oomkill":
@@ -224,6 +225,9 @@ class FakeK8sClient(K8sClient):
             },
         }
 
+    def get_workload_pods(self, *, kind: str, name: str, namespace: str):
+        return list(self.workload_pods)
+
 
 class RecordingSlackClient(SlackClient):
     def __init__(self) -> None:
@@ -268,6 +272,41 @@ class NotFoundAfterRestartK8sClient(FakeK8sClient):
             "recovered": False,
             "message": "Pod was not found. It may have already restarted or been deleted.",
             "pod": None,
+        }
+
+
+class ReplacementPodAfterRestartK8sClient(FakeK8sClient):
+    def verify_pod_recovery(self, **kwargs):
+        return super().verify_pod_recovery(**kwargs)
+
+    def delete_pod(self, name: str, namespace: str):
+        self.deleted.append((namespace, name))
+        self.workload_pods = [
+            {
+                "name": f"{name}-replacement",
+                "namespace": namespace,
+                "phase": "Running",
+                "owner_kind": "Deployment",
+                "owner_name": "demo-crashloop",
+                "container_statuses": [{"ready": True}],
+            }
+        ]
+        return {"ok": True, "message": f"Deleted pod {namespace}/{name}."}
+
+    def verify_pod_recovery(self, **kwargs):
+        replacement = self.get_workload_pods(
+            kind=kwargs.get("workload_kind") or "Deployment",
+            name=kwargs.get("workload_name") or "demo-crashloop",
+            namespace=kwargs["namespace"],
+        )[0]
+        return {
+            "ok": True,
+            "recovered": True,
+            "message": (
+                f"Workload Deployment {kwargs['namespace']}/demo-crashloop replaced pod "
+                f"{kwargs['name']} with healthy pod {replacement['name']}."
+            ),
+            "pod": replacement,
         }
 
 
@@ -932,3 +971,56 @@ def test_runtime_prioritizes_oomkill_over_pending_without_seed_filters(tmp_path)
     assert len(result["anomalies"]) == 1
     assert result["anomalies"][0]["anomaly_type"] == "OOMKilled"
     assert result["anomalies"][0]["resource_name"] == "demo-oomkill-live"
+
+
+def test_runtime_keeps_recent_seeded_oom_event_when_pod_is_absent(tmp_path) -> None:
+    settings = build_settings(tmp_path)
+    k8s_client = FakeK8sClient()
+    k8s_client.get_cluster_snapshot = lambda namespace: {
+        "pods": [],
+        "nodes": [],
+        "events": [],
+        "error": None,
+    }
+    runtime = AgentRuntime(
+        settings=settings,
+        audit_logger=AuditLogger(settings.audit_log_path),
+        k8s_client=k8s_client,
+        llm_client=LLMClient(api_key=""),
+        slack_client=RecordingSlackClient(),
+    )
+
+    result = runtime.run_once(
+        namespace="default",
+        seed_events=[
+            {
+                "type": "Warning",
+                "reason": "OOMKilled",
+                "message": "Container was OOMKilled after hitting memory limit",
+                "namespace": "default",
+                "resource_name": "demo-oomkill-missing",
+                "resource_kind": "Pod",
+                "last_timestamp": "2099-03-29T00:00:00Z",
+            }
+        ],
+    )
+
+    assert result["anomalies"]
+    assert result["anomalies"][0]["anomaly_type"] == "OOMKilled"
+
+
+def test_runtime_treats_healthy_workload_replacement_as_restart_success(tmp_path) -> None:
+    settings = build_settings(tmp_path)
+    runtime = AgentRuntime(
+        settings=settings,
+        audit_logger=AuditLogger(settings.audit_log_path),
+        k8s_client=ReplacementPodAfterRestartK8sClient(),
+        llm_client=LLMClient(api_key=""),
+        slack_client=RecordingSlackClient(),
+    )
+
+    result = runtime.run_once(namespace="default")
+
+    assert result["status"] == "completed"
+    assert result["approved"] is True
+    assert "replaced pod" in result["result"]

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from datetime import datetime, timezone
 import json
 from typing import Any
 
@@ -7,6 +8,7 @@ from ...models import Anomaly, RemediationPlan
 
 
 class LLMClient:
+    ABSENT_POD_OOM_EVENT_MAX_AGE_SECONDS = 300
     PENDING_POD_MIN_AGE_SECONDS = 300
 
     def __init__(self, *, api_key: str, model: str = "gemini-1.5-flash", allow_workload_patches: bool = False) -> None:
@@ -40,8 +42,10 @@ class LLMClient:
             pod = pods_by_name.get(str(anomaly.get("resource_name") or ""))
             if str(anomaly.get("resource_kind") or "") == "Pod":
                 if pod is None:
-                    continue
-                self._enrich_anomaly_with_pod_owner(anomaly, pod)
+                    if not self._keep_absent_pod_event(anomaly=anomaly, event=event):
+                        continue
+                else:
+                    self._enrich_anomaly_with_pod_owner(anomaly, pod)
             key = (anomaly["anomaly_type"], anomaly["resource_name"])
             if key in seen:
                 continue
@@ -100,7 +104,10 @@ class LLMClient:
                 "target_kind": anomaly.get("resource_kind", "Pod"),
                 "target_name": resource_name,
                 "namespace": namespace,
-                "parameters": {},
+                "parameters": {
+                    "target_workload_kind": anomaly.get("workload_kind", "Pod"),
+                    "target_workload_name": anomaly.get("workload_name", resource_name),
+                },
                 "confidence": 0.86,
                 "blast_radius": "low",
                 "reason": diagnosis,
@@ -268,17 +275,6 @@ class LLMClient:
         resource_kind = str(event.get("resource_kind") or "Pod")
         combined = f"{reason} {message}".lower()
 
-        if "crashloopbackoff" in combined or reason == "BackOff":
-            return self._build_anomaly(
-                anomaly_type="CrashLoopBackOff",
-                severity="high",
-                resource_kind=resource_kind,
-                resource_name=resource_name,
-                namespace=namespace,
-                summary=message or "Pod is repeatedly crashing.",
-                confidence=0.87,
-            )
-
         if "oomkilled" in combined:
             return self._build_anomaly(
                 anomaly_type="OOMKilled",
@@ -288,6 +284,17 @@ class LLMClient:
                 namespace=namespace,
                 summary=message or "Pod terminated because it ran out of memory.",
                 confidence=0.83,
+            )
+
+        if "crashloopbackoff" in combined or reason == "BackOff":
+            return self._build_anomaly(
+                anomaly_type="CrashLoopBackOff",
+                severity="high",
+                resource_kind=resource_kind,
+                resource_name=resource_name,
+                namespace=namespace,
+                summary=message or "Pod is repeatedly crashing.",
+                confidence=0.87,
             )
 
         if reason == "FailedScheduling" or "insufficient" in combined:
@@ -408,6 +415,26 @@ class LLMClient:
             )
         ]
 
+    def _keep_absent_pod_event(self, *, anomaly: Anomaly, event: dict[str, Any]) -> bool:
+        if bool(event.get("seeded")):
+            return True
+        if anomaly.get("anomaly_type") != "OOMKilled":
+            return False
+        age_seconds = self._event_age_seconds(event)
+        return age_seconds is not None and age_seconds <= self.ABSENT_POD_OOM_EVENT_MAX_AGE_SECONDS
+
+    def _event_age_seconds(self, event: dict[str, Any]) -> float | None:
+        last_timestamp = str(event.get("last_timestamp") or "").strip()
+        if not last_timestamp:
+            return None
+        try:
+            parsed = datetime.fromisoformat(last_timestamp.replace("Z", "+00:00"))
+        except ValueError:
+            return None
+        if parsed.tzinfo is None:
+            parsed = parsed.replace(tzinfo=timezone.utc)
+        return abs((datetime.now(timezone.utc) - parsed.astimezone(timezone.utc)).total_seconds())
+
     def _node_to_anomaly(self, node: dict[str, Any], *, namespace: str) -> Anomaly | None:
         ready_status = str(node.get("ready_status") or "")
         if ready_status != "False":
@@ -423,6 +450,21 @@ class LLMClient:
             evidence.append(f"ready message: {message}")
         if node.get("unschedulable"):
             evidence.append("node is marked unschedulable")
+        for condition in node.get("conditions", []):
+            if not isinstance(condition, dict):
+                continue
+            condition_type = str(condition.get("type") or "")
+            condition_status = str(condition.get("status") or "")
+            if condition_type == "Ready" or condition_status != "True":
+                continue
+            condition_reason = str(condition.get("reason") or "")
+            condition_message = str(condition.get("message") or "")
+            detail = f"node condition {condition_type}=True"
+            if condition_reason:
+                detail = f"{detail} ({condition_reason})"
+            if condition_message:
+                detail = f"{detail}: {condition_message}"
+            evidence.append(detail)
 
         return self._build_anomaly(
             anomaly_type="NodeNotReady",

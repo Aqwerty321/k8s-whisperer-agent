@@ -185,10 +185,14 @@ def make_execute_node(deps: AgentDependencies):
             return {"result": "Execution skipped because the remediation was not approved."}
 
         if action == "restart_pod":
+            workload_kind = str(plan.get("parameters", {}).get("target_workload_kind") or "")
+            workload_name = str(plan.get("parameters", {}).get("target_workload_name") or "")
             outcome = deps.k8s_client.delete_pod(name=target_name, namespace=namespace)
             verification = deps.k8s_client.verify_pod_recovery(
                 name=target_name,
                 namespace=namespace,
+                workload_kind=workload_kind or None,
+                workload_name=workload_name or None,
                 timeout_seconds=deps.settings.verify_timeout_seconds,
             )
             result = (

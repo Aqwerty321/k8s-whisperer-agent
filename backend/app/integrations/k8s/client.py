@@ -61,6 +61,18 @@ class K8sClient:
             self._load_error = str(exc)
             return []
 
+    def get_workload_pods(self, *, kind: str, name: str, namespace: str) -> list[dict[str, Any]]:
+        pods = self.get_pods(namespace)
+        normalized_kind = str(kind or "").lower()
+        if normalized_kind == "deployment":
+            return [
+                pod
+                for pod in pods
+                if str(pod.get("owner_kind") or "").lower() == "deployment"
+                and str(pod.get("owner_name") or "") == name
+            ]
+        return []
+
     def get_events(self, namespace: str) -> list[dict[str, Any]]:
         self._ensure_client()
         if self._core_v1 is None:
@@ -336,6 +348,8 @@ class K8sClient:
         *,
         name: str,
         namespace: str,
+        workload_kind: str | None = None,
+        workload_name: str | None = None,
         expected_absent: bool = False,
         timeout_seconds: int = 20,
         poll_interval_seconds: float = 2.0,
@@ -373,6 +387,23 @@ class K8sClient:
                     "message": f"Pod {namespace}/{name} became healthy before timeout.",
                     "pod": last_snapshot,
                 }
+            elif not expected_absent and workload_kind and workload_name:
+                replacement = self._healthy_workload_replacement(
+                    kind=workload_kind,
+                    name=workload_name,
+                    namespace=namespace,
+                    previous_pod_name=name,
+                )
+                if replacement is not None:
+                    return {
+                        "ok": True,
+                        "recovered": True,
+                        "message": (
+                            f"Workload {workload_kind} {namespace}/{workload_name} replaced pod {name} "
+                            f"with healthy pod {replacement.get('name')}."
+                        ),
+                        "pod": replacement,
+                    }
 
             time.sleep(poll_interval_seconds)
 
@@ -382,6 +413,22 @@ class K8sClient:
             "message": last_error or f"Timed out waiting for pod {namespace}/{name} to recover.",
             "pod": last_snapshot,
         }
+
+    def _healthy_workload_replacement(
+        self,
+        *,
+        kind: str,
+        name: str,
+        namespace: str,
+        previous_pod_name: str,
+    ) -> dict[str, Any] | None:
+        for pod in self.get_workload_pods(kind=kind, name=name, namespace=namespace):
+            pod_name = str(pod.get("name") or "")
+            if pod_name == previous_pod_name:
+                continue
+            if self._pod_is_healthy(pod):
+                return pod
+        return None
 
     def _pod_is_healthy(self, pod: dict[str, Any]) -> bool:
         if str(pod.get("phase")) != "Running":
@@ -407,7 +454,8 @@ class K8sClient:
             restart_count = getattr(status, "restart_count", 0) or 0
             total_restarts += restart_count
             waiting = getattr(getattr(status, "state", None), "waiting", None)
-            terminated = getattr(getattr(status, "last_state", None), "terminated", None)
+            current_terminated = getattr(getattr(status, "state", None), "terminated", None)
+            terminated = current_terminated or getattr(getattr(status, "last_state", None), "terminated", None)
             container_statuses.append(
                 {
                     "name": getattr(status, "name", "unknown"),
@@ -436,6 +484,7 @@ class K8sClient:
 
     def _serialize_node(self, node: Any) -> dict[str, Any]:
         ready_condition = self._node_ready_condition(node)
+        conditions = getattr(getattr(node, "status", None), "conditions", None) or []
         return {
             "name": getattr(getattr(node, "metadata", None), "name", "unknown"),
             "created_at": self._serialize_datetime(getattr(getattr(node, "metadata", None), "creation_timestamp", None)),
@@ -444,6 +493,15 @@ class K8sClient:
             "ready_reason": getattr(ready_condition, "reason", None),
             "ready_message": getattr(ready_condition, "message", None),
             "unschedulable": bool(getattr(getattr(node, "spec", None), "unschedulable", False)),
+            "conditions": [
+                {
+                    "type": getattr(condition, "type", None),
+                    "status": getattr(condition, "status", None),
+                    "reason": getattr(condition, "reason", None),
+                    "message": getattr(condition, "message", None),
+                }
+                for condition in conditions
+            ],
         }
 
     def _node_ready_condition(self, node: Any) -> Any | None:

@@ -108,16 +108,20 @@ def build_initial_state(
     incident_id: str | None = None,
     seed_events: list[dict[str, Any]] | None = None,
 ) -> WhisperState:
+    normalized_seed_events = [
+        {**event, "seeded": True}
+        for event in (seed_events or [])
+    ]
     return {
         "incident_id": incident_id or new_incident_id(),
         "created_at": current_timestamp(),
         "updated_at": current_timestamp(),
         "namespace": namespace,
         "cluster_state": {},
-        "events": list(seed_events or []),
+        "events": normalized_seed_events,
         "seeded_resource_names": [
             str(event.get("resource_name"))
-            for event in (seed_events or [])
+            for event in normalized_seed_events
             if event.get("resource_name")
         ],
         "anomalies": [],
