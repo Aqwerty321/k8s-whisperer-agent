@@ -364,7 +364,6 @@ The first test pass should prove the scaffold is wired correctly without needing
 ## Non-Goals For The First Scaffold Pass
 - Full production persistence for paused graph runs
 - Full Prometheus wiring
-- Broad multi-namespace coordination
 - Fully tuned prompts
 - Complete remediation catalog for every anomaly type
 - Deep blockchain workflow integration into the core agent loop

@@ -8,6 +8,7 @@
 - FastAPI backend with LangGraph orchestration
 - persistent checkpointing for paused/resumed incident threads
 - tightly scoped Kubernetes integration with namespace-scoped pod writes by default and optional read-only node access
+- optional multi-namespace observation without changing the default single-namespace demo profile
 - Slack interactive approval callbacks with signed request verification
 - optional Prometheus-backed CPU throttling detection plus a typed Prometheus MCP server
 

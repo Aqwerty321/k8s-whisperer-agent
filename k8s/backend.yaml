@@ -54,6 +54,10 @@ spec:
               valueFrom:
                 fieldRef:
                   fieldPath: metadata.namespace
+            - name: OBSERVE_ALL_NAMESPACES
+              value: "false"
+            - name: OBSERVED_NAMESPACES
+              value: ""
             - name: PUBLIC_BASE_URL
               value: https://slack.aqwerty321.me
             - name: ENABLE_BACKGROUND_POLLING

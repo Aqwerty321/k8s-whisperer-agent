@@ -7,7 +7,7 @@ K8sWhisperer is an autonomous Kubernetes incident response scaffold for PS1 of t
 - LangGraph workflow for Observe -> Detect -> Diagnose -> Plan -> Safety Gate -> Execute -> Explain/Log
 - Typed shared state model
 - Slack Web API integration and inbound webhook signature verification
-- Kubernetes client wrappers with pod-focused operations and optional read-only node observation
+- Kubernetes client wrappers with pod-focused operations, optional read-only node observation, and optional multi-namespace scanning
 - Append-only JSON Lines audit logging
 - Disk-backed LangGraph checkpoint persistence for HITL resume across process restarts
 - MCP servers for Kubernetes, Slack, and Prometheus tools
@@ -22,6 +22,7 @@ K8sWhisperer is an autonomous Kubernetes incident response scaffold for PS1 of t
 - Stronger `PendingPod` reasoning that turns scheduling-event evidence into a concrete operator recommendation only after the pod has remained pending for at least five minutes
 - Optional Prometheus-backed `CPUThrottling` detection that recommends CPU review when per-pod throttling exceeds the configured threshold
 - Optional read-only `NodeNotReady` detection that escalates with node evidence and never mutates nodes when node observation is enabled
+- Optional multi-namespace observation through either an explicit namespace list or all-namespace scanning, while keeping single-namespace mode as the default demo profile
 - Slack approval flow that pauses the graph, acknowledges the callback immediately, and resumes it through the FastAPI webhook in the background
 - Slack incident messages now carry message correlation so follow-up explanations can update the same message when possible
 - Slack approval callbacks now update the tracked incident message immediately on approve or reject
@@ -55,6 +56,7 @@ pip install -r requirements.txt
 - Copy `.env.example` to `.env` if needed.
 - Fill in Slack credentials, Gemini API key, kubeconfig path, and optional public callback URL.
 - If you want checkpoint state somewhere else, set `CHECKPOINT_STORE_PATH`.
+- Optional broader observation settings: `OBSERVE_ALL_NAMESPACES=true` scans the whole cluster, while `OBSERVED_NAMESPACES=default,payments` scans a fixed namespace list.
 
 ### 3. Run the API
 ```bash
@@ -249,6 +251,7 @@ If you control a domain and move DNS to Cloudflare, you can expose the app on a 
 - The Slack callback path is visible end-to-end instead of being hidden inside framework magic.
 - Incident message correlation is explicit in shared state rather than hidden in the Slack client.
 - Kubernetes access is narrowly wrapped and paired with RBAC-limited manifests.
+- Observation can stay single-namespace for the strict demo profile or expand to optional multi-namespace scans when explicitly configured.
 - MCP integration is scaffolded as dedicated typed tool servers, matching the PS rubric.
 - The optional Stellar bonus is isolated so it cannot destabilize the remediation loop.
 

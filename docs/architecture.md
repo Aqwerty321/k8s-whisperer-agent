@@ -29,6 +29,8 @@ The scaffold follows the PS1 control loop directly:
 
 ## First Implemented Live Path
 - Observe collects pod summaries, node summaries, and namespace events.
+- By default, observation stays scoped to the configured namespace for a safer demo profile.
+- Optional settings can widen observation to an explicit namespace list or all namespaces without changing the downstream state shape.
 - Detect converts restart-heavy pods and matching events into `CrashLoopBackOff` anomalies.
 - Diagnose collects logs and describe-style context.
 - Plan chooses `restart_pod` for the first-pass safe remediation.
@@ -96,6 +98,7 @@ The scaffold follows the PS1 control loop directly:
 - The app supports one-shot runs and an optional background polling loop.
 - Startup polling is controlled by `ENABLE_BACKGROUND_POLLING`.
 - The API exposes `POST /api/poller` to start or stop polling and `POST /api/poller/run-once` for manual cycles.
+- Broader observation is controlled by `OBSERVE_ALL_NAMESPACES` or `OBSERVED_NAMESPACES`.
 
 ## Safety Principles
 - Auto-remediation only for low blast-radius, above-threshold plans.
