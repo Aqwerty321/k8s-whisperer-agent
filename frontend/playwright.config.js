@@ -40,7 +40,7 @@ export default defineConfig({
   webServer: {
     command: "bash ../scripts/run_frontend_e2e_stack.sh",
     url: "http://127.0.0.1:4173",
-    reuseExistingServer: false,
+    reuseExistingServer: true,
     timeout: 120000,
   },
 });

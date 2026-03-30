@@ -8,7 +8,7 @@ from fastapi import Query
 from fastapi.responses import PlainTextResponse
 from pydantic import BaseModel, Field
 
-from ..attestation import StellarAttestor, contract_incident_key, hash_incident_record
+from ..attestation import StellarAttestor, contract_incident_key, hash_incident_record, network_passphrase_for
 from ..demo import build_demo_coverage
 
 
@@ -385,6 +385,32 @@ async def attest_incident(payload: AttestationRequest, request: Request) -> dict
     }
 
 
+@router.get("/api/attest/{incident_id}/proof")
+async def get_attestation_proof(incident_id: str, request: Request) -> dict[str, Any]:
+    incident = request.app.state.runtime.get_incident(incident_id)
+    audit_entries = request.app.state.audit_logger.read_incident(incident_id)
+    attestation_target = _attestation_target(incident=incident, audit_entries=audit_entries)
+    if attestation_target is None:
+        raise HTTPException(status_code=404, detail="Incident not found.")
+
+    settings = request.app.state.settings
+    return {
+        "incident_id": incident_id,
+        "incident_hash": hash_incident_record(attestation_target),
+        "contract_key": contract_incident_key(incident_id),
+        "tx_id": _incident_tx_id(incident=incident, audit_entries=audit_entries),
+        "source": "runtime" if incident is not None else "audit",
+        "record": attestation_target,
+        "soroban": {
+            "network": settings.stellar_network,
+            "network_passphrase": network_passphrase_for(settings.stellar_network),
+            "rpc_url": settings.stellar_rpc_url,
+            "contract_id": settings.stellar_contract_id,
+            "verify_enabled": bool(settings.stellar_rpc_url and settings.stellar_contract_id),
+        },
+    }
+
+
 @router.post("/api/attest/verify")
 async def verify_attestation(payload: AttestationVerifyRequest, request: Request) -> dict[str, Any]:
     incident = request.app.state.runtime.get_incident(payload.incident_id)
@@ -421,9 +447,10 @@ def _summarize_incident(incident: dict[str, Any]) -> dict[str, Any]:
     anomalies = incident.get("anomalies") or []
     first_anomaly = anomalies[0] if anomalies else {}
     plan = incident.get("plan") or {}
+    status = _display_incident_status(incident)
     return {
         "incident_id": incident.get("incident_id"),
-        "status": incident.get("status"),
+        "status": status,
         "namespace": incident.get("namespace"),
         "awaiting_human": incident.get("awaiting_human", False),
         "anomaly_type": first_anomaly.get("anomaly_type"),
@@ -435,6 +462,29 @@ def _summarize_incident(incident: dict[str, Any]) -> dict[str, Any]:
         "slack_message_ts": incident.get("slack_message_ts"),
         "result": incident.get("result"),
     }
+
+
+def _display_incident_status(incident: dict[str, Any]) -> str | None:
+    status = incident.get("status")
+    if status != "error":
+        return status
+    if incident.get("awaiting_human"):
+        return "awaiting_human"
+
+    approved = incident.get("approved")
+    result = str(incident.get("result") or "")
+    error = str(incident.get("error") or "")
+    plan = incident.get("plan") or {}
+    action = str(plan.get("action") or "")
+
+    if approved is True and action == "restart_pod" and _is_benign_replacement_outcome(result=result, error=error):
+        return "completed"
+    return status
+
+
+def _is_benign_replacement_outcome(*, result: str, error: str) -> bool:
+    combined = f"{result} {error}".lower()
+    return "original pod no longer exists" in combined or "may have already restarted or been deleted" in combined
 
 
 def _attestation_target(*, incident: dict[str, Any] | None, audit_entries: list[dict[str, Any]]) -> dict[str, Any] | None:

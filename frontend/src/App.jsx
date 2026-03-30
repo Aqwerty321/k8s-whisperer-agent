@@ -83,6 +83,7 @@ const panelStyle = {
   borderRadius: "22px",
   padding: "1rem",
   boxShadow: "0 12px 42px rgba(0, 0, 0, 0.18)",
+  minWidth: 0,
 };
 
 const panelHeaderStyle = {
@@ -211,6 +212,8 @@ const preStyle = {
   color: "#d9e7fb",
   fontSize: "0.84rem",
   lineHeight: 1.6,
+  maxHeight: "220px",
+  overflowY: "auto",
 };
 
 const desktopOnlyStyle = {
@@ -523,7 +526,7 @@ export default function App() {
               {selectedSummary ? (
                 <>
                   <div style={{ display: "flex", gap: "0.55rem", flexWrap: "wrap", marginBottom: "1rem" }}>
-                    <div style={badgeStyle(toneForStatus(selectedSummary.status))}>{selectedSummary.status}</div>
+                    <div data-testid="selected-incident-status" style={badgeStyle(toneForStatus(selectedSummary.status))}>{selectedSummary.status}</div>
                     <div style={badgeStyle(toneForVerification(verificationResult))}>
                       {verificationResult ? (verificationResult.verified ? "Verified" : verificationResult.stub ? "Verify Stubbed" : "Mismatch") : "Not Verified"}
                     </div>
@@ -616,14 +619,14 @@ export default function App() {
             </div>
           </section>
 
-          <aside style={{ display: "grid", gap: "1rem" }}>
-            <div style={panelStyle}>
+          <aside style={{ display: "grid", gap: "1rem", alignContent: "start", minWidth: 0 }}>
+            <div style={{ ...panelStyle, minWidth: 0 }}>
               <div style={panelHeaderStyle}>
                 <div style={eyebrowStyle}>Audit Trail</div>
                 <h2 style={titleStyle}>Timeline</h2>
                 <div style={subtitleStyle}>Recent audit entries for the selected incident, including attestation events and transaction IDs.</div>
               </div>
-              <div style={timelineStyle}>
+              <div style={{ ...timelineStyle, maxHeight: "540px", overflowY: "auto", paddingRight: "0.15rem" }}>
                 {auditPayload?.entries?.length ? (
                   auditPayload.entries.map((entry, index) => (
                     <div key={`${entry.timestamp || index}-${entry.decision || 'entry'}`} style={timelineItemStyle}>
@@ -647,13 +650,13 @@ export default function App() {
               </div>
             </div>
 
-            <div style={panelStyle}>
+            <div style={{ ...panelStyle, minWidth: 0 }}>
               <div style={panelHeaderStyle}>
                 <div style={eyebrowStyle}>Debug</div>
                 <h2 style={titleStyle}>Backend Payloads</h2>
                 <div style={subtitleStyle}>Keep the raw API payloads accessible without making them the main view.</div>
               </div>
-              <div style={{ display: "grid", gap: "0.85rem" }}>
+              <div style={{ display: "grid", gap: "0.85rem", minWidth: 0 }}>
                 <pre style={preStyle}>{anchorPayload ? JSON.stringify(anchorPayload, null, 2) : "No attestation response yet."}</pre>
                 <pre style={preStyle}>{verifyPayload ? JSON.stringify(verifyPayload, null, 2) : "No verification response yet."}</pre>
               </div>

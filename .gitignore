@@ -11,8 +11,11 @@ dist/
 .mypy_cache/
 audit_log/
 *.log
+.artifacts/
 data/
 node_modules/
 frontend/dist/
+frontend/test-results/
+frontend/playwright-report/
 target/
 deploy/cloudflared/config.yml

@@ -7,6 +7,7 @@
 ## Technical Depth
 - FastAPI backend with LangGraph orchestration
 - persistent checkpointing for paused/resumed incident threads
+- hybrid anomaly detection that keeps heuristic classification as the stable baseline and adds validated LLM enrichment when available
 - tightly scoped Kubernetes integration with namespace-scoped pod writes by default and optional read-only node access
 - optional multi-namespace observation without changing the default single-namespace demo profile
 - Slack interactive approval callbacks with signed request verification
@@ -17,7 +18,7 @@
 - medium/high-risk actions pause for human approval
 - every incident produces an explanation and audit record
 - every incident can also be exported as a compact markdown report for review
-- the default `OOMKilled` flow remains recommendation-only unless workload patching is explicitly enabled
+- approved `OOMKilled` incidents can patch and verify the owning deployment when workload patching is enabled, while the default strict profile keeps that path recommendation-only
 - public ingress is restricted to health and Slack callback only
 - fallback local approval path exists if Slack or Cloudflare fails
 
@@ -36,7 +37,7 @@
 - cloudflared named tunnel for stable callback URL
 
 ## Stretch / Future Work
-- patching workload owners instead of pod-only recommendations
+- broader workload-aware remediation beyond the current deployment-focused patch support
 - broader remediation catalog
 - optional on-chain attestation after incident completion
 - lightweight operator UI after the core demo path is locked

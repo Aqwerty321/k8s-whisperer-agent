@@ -48,7 +48,7 @@ test("operator can anchor and verify an incident proof", async ({ page, request 
 
   await expect(page.getByText(seeded.incident_id).first()).toBeVisible();
   await expect(page.getByText("Selected Incident", { exact: true })).toBeVisible();
-  await expect(page.getByText(seeded.status).nth(1)).toBeVisible();
+  await expect(page.getByTestId("selected-incident-status")).toHaveText(seeded.status);
 
   await page.getByRole("button", { name: "Anchor Incident" }).click();
   await expect(page.getByText("Anchored on Soroban", { exact: true })).toBeVisible();

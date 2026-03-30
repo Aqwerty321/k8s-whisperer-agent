@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from datetime import datetime, timezone
 import json
+import re
 from typing import Any
 
 from ...models import Anomaly, RemediationPlan
@@ -11,6 +12,17 @@ class LLMClient:
     ABSENT_POD_OOM_EVENT_MAX_AGE_SECONDS = 300
     PENDING_POD_MIN_AGE_SECONDS = 300
     DEPLOYMENT_STALLED_MIN_AGE_SECONDS = 600
+    VALID_ANOMALY_TYPES = {
+        "CrashLoopBackOff",
+        "OOMKilled",
+        "PendingPod",
+        "ImagePullBackOff",
+        "CPUThrottling",
+        "EvictedPod",
+        "DeploymentStalled",
+        "NodeNotReady",
+    }
+    VALID_SEVERITIES = {"low", "medium", "high", "critical"}
 
     def __init__(self, *, api_key: str, model: str = "gemini-1.5-flash", allow_workload_patches: bool = False) -> None:
         self.api_key = api_key
@@ -22,6 +34,26 @@ class LLMClient:
         return bool(self.api_key)
 
     def classify_events(
+        self,
+        *,
+        events: list[dict[str, Any]],
+        cluster_state: dict[str, Any],
+        namespace: str,
+    ) -> list[Anomaly]:
+        anomalies = self._classify_events_heuristic(
+            events=events,
+            cluster_state=cluster_state,
+            namespace=namespace,
+        )
+        self._merge_llm_detected_anomalies(
+            anomalies=anomalies,
+            events=events,
+            cluster_state=cluster_state,
+            namespace=namespace,
+        )
+        return self._drop_shadowed_anomalies(anomalies)
+
+    def _classify_events_heuristic(
         self,
         *,
         events: list[dict[str, Any]],
@@ -53,6 +85,8 @@ class LLMClient:
                     self._enrich_absent_seeded_oom_with_matching_workload(anomaly, pods_by_name)
                 else:
                     self._enrich_anomaly_with_pod_owner(anomaly, pod)
+                    self._enrich_anomaly_with_container_details(anomaly, pod)
+            self._enrich_anomaly_with_workload_resources(anomaly, deployments_by_name)
             key = (anomaly["anomaly_type"], anomaly["resource_name"])
             if key in seen:
                 continue
@@ -63,6 +97,8 @@ class LLMClient:
             anomaly = self._pod_to_anomaly(pod)
             if anomaly is None:
                 continue
+            self._enrich_anomaly_with_container_details(anomaly, pod)
+            self._enrich_anomaly_with_workload_resources(anomaly, deployments_by_name)
             key = (anomaly["anomaly_type"], anomaly["resource_name"])
             if key in seen:
                 self._merge_evidence(anomalies, anomaly)
@@ -108,7 +144,7 @@ class LLMClient:
             anomalies.append(anomaly)
             seen.add(key)
 
-        return self._drop_shadowed_anomalies(anomalies)
+        return anomalies
 
     def diagnose(
         self,
@@ -155,6 +191,10 @@ class LLMClient:
                 "parameters": {
                     "recommendation": self._oomkill_recommendation(anomaly),
                     "suggested_memory_factor": 1.5,
+                    "current_memory_limit": self._oomkill_memory_value(anomaly, "current_memory_limit"),
+                    "current_memory_request": self._oomkill_memory_value(anomaly, "current_memory_request"),
+                    "suggested_memory_limit": self._oomkill_scaled_memory_value(anomaly, "current_memory_limit"),
+                    "suggested_memory_request": self._oomkill_scaled_memory_value(anomaly, "current_memory_request"),
                     "suggested_follow_up": self._workload_follow_up(anomaly),
                     "target_workload_kind": anomaly.get("workload_kind", "Pod"),
                     "target_workload_name": anomaly.get("workload_name", resource_name),
@@ -294,16 +334,7 @@ class LLMClient:
             return fallback
 
         try:
-            if self._client is None:
-                from langchain_google_genai import ChatGoogleGenerativeAI
-
-                self._client = ChatGoogleGenerativeAI(
-                    model=self.model,
-                    google_api_key=self.api_key,
-                    temperature=0.2,
-                )
-
-            response = self._client.invoke(prompt)
+            response = self._get_client().invoke(prompt)
             content = getattr(response, "content", "")
             if isinstance(content, list):
                 return " ".join(str(item) for item in content) or fallback
@@ -311,6 +342,206 @@ class LLMClient:
             return text or fallback
         except Exception:
             return fallback
+
+    def _get_client(self) -> Any:
+        if self._client is None:
+            from langchain_google_genai import ChatGoogleGenerativeAI
+
+            self._client = ChatGoogleGenerativeAI(
+                model=self.model,
+                google_api_key=self.api_key,
+                temperature=0.2,
+            )
+        return self._client
+
+    def _invoke_json(self, *, prompt: str) -> Any | None:
+        if not self.is_configured():
+            return None
+
+        try:
+            response = self._get_client().invoke(prompt)
+            content = getattr(response, "content", "")
+            if isinstance(content, list):
+                text = " ".join(str(item) for item in content)
+            else:
+                text = str(content)
+            return self._extract_json_payload(text)
+        except Exception:
+            return None
+
+    def _extract_json_payload(self, text: str) -> Any | None:
+        raw = str(text or "").strip()
+        if not raw:
+            return None
+        if raw.startswith("```"):
+            parts = raw.split("```")
+            raw = "\n".join(part for part in parts if part and not part.lower().startswith("json")).strip()
+
+        for start_char, end_char in (("{", "}"), ("[", "]")):
+            start = raw.find(start_char)
+            end = raw.rfind(end_char)
+            if start == -1 or end == -1 or end < start:
+                continue
+            snippet = raw[start : end + 1]
+            try:
+                return json.loads(snippet)
+            except json.JSONDecodeError:
+                continue
+        return None
+
+    def _merge_llm_detected_anomalies(
+        self,
+        *,
+        anomalies: list[Anomaly],
+        events: list[dict[str, Any]],
+        cluster_state: dict[str, Any],
+        namespace: str,
+    ) -> None:
+        if not self.is_configured():
+            return
+
+        llm_response = self._invoke_json(
+            prompt=self._build_detection_prompt(events=events, cluster_state=cluster_state, namespace=namespace)
+        )
+        if not isinstance(llm_response, dict):
+            return
+
+        raw_anomalies = llm_response.get("anomalies")
+        if not isinstance(raw_anomalies, list) or not raw_anomalies:
+            return
+
+        pods_by_name = {
+            str(pod.get("name") or ""): pod
+            for pod in cluster_state.get("pods", [])
+            if isinstance(pod, dict) and pod.get("name")
+        }
+        deployments_by_name = {
+            str(deployment.get("name") or ""): deployment
+            for deployment in cluster_state.get("deployments", [])
+            if isinstance(deployment, dict) and deployment.get("name")
+        }
+        seen = {
+            (str(anomaly.get("anomaly_type") or ""), str(anomaly.get("resource_name") or ""))
+            for anomaly in anomalies
+        }
+
+        for raw_anomaly in raw_anomalies:
+            anomaly = self._normalize_llm_anomaly(
+                raw_anomaly,
+                namespace=namespace,
+                pods_by_name=pods_by_name,
+                deployments_by_name=deployments_by_name,
+            )
+            if anomaly is None:
+                continue
+            key = (str(anomaly.get("anomaly_type") or ""), str(anomaly.get("resource_name") or ""))
+            if key in seen:
+                self._merge_evidence(anomalies, anomaly)
+                continue
+            anomalies.append(anomaly)
+            seen.add(key)
+
+    def _build_detection_prompt(
+        self,
+        *,
+        events: list[dict[str, Any]],
+        cluster_state: dict[str, Any],
+        namespace: str,
+    ) -> str:
+        payload = {
+            "namespace": namespace,
+            "events": events[:25],
+            "pods": (cluster_state.get("pods") or [])[:25],
+            "deployments": (cluster_state.get("deployments") or [])[:15],
+            "nodes": (cluster_state.get("nodes") or [])[:15],
+            "prometheus": cluster_state.get("prometheus") or {},
+        }
+        return (
+            "Classify Kubernetes incident anomalies from the supplied events and cluster snapshot. "
+            "Return strict JSON only with the shape "
+            '{"anomalies":[{"anomaly_type":"...","resource_name":"...","resource_kind":"...","namespace":"...","severity":"...","summary":"...","confidence":0.0,"evidence":["..."]}]}. '
+            f"Only use these anomaly types: {sorted(self.VALID_ANOMALY_TYPES)}. "
+            "Only include anomalies that are directly supported by the payload. Do not invent resources. "
+            "If nothing is clearly wrong, return {\"anomalies\":[]}.\n"
+            f"Payload: {json.dumps(payload, default=str)[:12000]}"
+        )
+
+    def _normalize_llm_anomaly(
+        self,
+        raw_anomaly: Any,
+        *,
+        namespace: str,
+        pods_by_name: dict[str, dict[str, Any]],
+        deployments_by_name: dict[str, dict[str, Any]],
+    ) -> Anomaly | None:
+        if not isinstance(raw_anomaly, dict):
+            return None
+
+        anomaly_type = str(raw_anomaly.get("anomaly_type") or "").strip()
+        if anomaly_type not in self.VALID_ANOMALY_TYPES:
+            return None
+
+        resource_name = str(raw_anomaly.get("resource_name") or "").strip()
+        if not resource_name:
+            return None
+
+        resource_kind = str(raw_anomaly.get("resource_kind") or self._default_resource_kind_for_anomaly(anomaly_type)).strip() or "Pod"
+        severity = str(raw_anomaly.get("severity") or self._default_severity_for_anomaly(anomaly_type)).strip().lower()
+        if severity not in self.VALID_SEVERITIES:
+            severity = self._default_severity_for_anomaly(anomaly_type)
+
+        summary = str(raw_anomaly.get("summary") or "").strip() or f"{anomaly_type} detected for {resource_name}."
+        confidence = self._normalize_confidence(raw_anomaly.get("confidence"))
+        evidence = self._normalize_evidence(raw_anomaly.get("evidence"), summary=summary)
+
+        anomaly = self._build_anomaly(
+            anomaly_type=anomaly_type,
+            severity=severity,
+            resource_kind=resource_kind,
+            resource_name=resource_name,
+            namespace=str(raw_anomaly.get("namespace") or namespace),
+            workload_kind=str(raw_anomaly.get("workload_kind") or resource_kind),
+            workload_name=str(raw_anomaly.get("workload_name") or resource_name),
+            summary=summary,
+            confidence=confidence,
+            evidence=evidence,
+        )
+
+        pod = pods_by_name.get(resource_name)
+        if pod is not None:
+            self._enrich_anomaly_with_pod_owner(anomaly, pod)
+            self._enrich_anomaly_with_container_details(anomaly, pod)
+        self._enrich_anomaly_with_workload_resources(anomaly, deployments_by_name)
+        return anomaly
+
+    def _default_resource_kind_for_anomaly(self, anomaly_type: str) -> str:
+        if anomaly_type == "NodeNotReady":
+            return "Node"
+        if anomaly_type == "DeploymentStalled":
+            return "Deployment"
+        return "Pod"
+
+    def _default_severity_for_anomaly(self, anomaly_type: str) -> str:
+        if anomaly_type == "NodeNotReady":
+            return "critical"
+        if anomaly_type in {"OOMKilled", "CrashLoopBackOff", "DeploymentStalled"}:
+            return "high"
+        return "medium"
+
+    def _normalize_confidence(self, value: Any) -> float:
+        try:
+            confidence = float(value)
+        except (TypeError, ValueError):
+            return 0.6
+        return max(0.0, min(1.0, confidence))
+
+    def _normalize_evidence(self, value: Any, *, summary: str) -> list[str]:
+        if isinstance(value, list):
+            evidence = [str(item).strip() for item in value if str(item).strip()]
+            return evidence or [summary]
+        if isinstance(value, str) and value.strip():
+            return [value.strip()]
+        return [summary]
 
     def _event_to_anomaly(self, event: dict[str, Any], namespace: str) -> Anomaly | None:
         reason = str(event.get("reason") or "")
@@ -713,10 +944,16 @@ class LLMClient:
 
         selected_name = str(selected_container.get("name") or "")
         cpu_limit = ((selected_container.get("resources") or {}).get("limits") or {}).get("cpu")
+        memory_limit = ((selected_container.get("resources") or {}).get("limits") or {}).get("memory")
+        memory_request = ((selected_container.get("resources") or {}).get("requests") or {}).get("memory")
         if selected_name:
             metrics["container_name"] = selected_name
         if cpu_limit:
             metrics["current_cpu_limit"] = str(cpu_limit)
+        if memory_limit:
+            metrics["current_memory_limit"] = str(memory_limit)
+        if memory_request:
+            metrics["current_memory_request"] = str(memory_request)
         anomaly["metrics"] = metrics
 
     def _enrich_absent_seeded_oom_with_matching_workload(self, anomaly: Anomaly, pods_by_name: dict[str, dict[str, Any]]) -> None:
@@ -735,6 +972,7 @@ class LLMClient:
         ]
         for pod in candidates:
             self._enrich_anomaly_with_pod_owner(anomaly, pod)
+            self._enrich_anomaly_with_container_details(anomaly, pod)
             return
 
     def _pending_pod_evidence(self, pod: dict[str, Any]) -> list[str]:
@@ -917,6 +1155,13 @@ class LLMClient:
 
     def _oomkill_recommendation(self, anomaly: Anomaly) -> str:
         workload = self._workload_label(anomaly)
+        current_limit = self._oomkill_memory_value(anomaly, "current_memory_limit")
+        suggested_limit = self._oomkill_scaled_memory_value(anomaly, "current_memory_limit")
+        if current_limit and suggested_limit:
+            return (
+                f"Increase the memory limit for {workload} from {current_limit} to about {suggested_limit} "
+                "and then restart the affected pod or rollout."
+            )
         return f"Increase the memory limit for {workload} by roughly 50% and then restart the affected pod or rollout."
 
     def _oomkill_patch(self, anomaly: Anomaly) -> dict[str, Any] | None:
@@ -925,6 +1170,33 @@ class LLMClient:
         workload_kind = str(anomaly.get("workload_kind") or "Pod")
         if workload_kind != "Deployment":
             return None
+        metrics = anomaly.get("metrics") if isinstance(anomaly.get("metrics"), dict) else {}
+        container_name = str(metrics.get("container_name") or "")
+        current_limit = str(metrics.get("current_memory_limit") or "")
+        current_request = str(metrics.get("current_memory_request") or "")
+        scaled_limit = self._scale_memory_value(current_limit, factor=1.5)
+        scaled_request = self._scale_memory_value(current_request, factor=1.5)
+
+        if container_name and (scaled_limit or scaled_request):
+            resources: dict[str, Any] = {}
+            if scaled_limit:
+                resources["limits"] = {"memory": scaled_limit}
+            if scaled_request:
+                resources["requests"] = {"memory": scaled_request}
+            return {
+                "spec": {
+                    "template": {
+                        "spec": {
+                            "containers": [
+                                {
+                                    "name": container_name,
+                                    "resources": resources,
+                                }
+                            ]
+                        }
+                    }
+                }
+            }
         return {
             "spec": {
                 "template": {
@@ -942,6 +1214,34 @@ class LLMClient:
                 }
             }
         }
+
+    def _scale_memory_value(self, value: str, *, factor: float) -> str | None:
+        raw = str(value or "").strip()
+        if not raw:
+            return None
+        match = re.fullmatch(r"([0-9]+(?:\.[0-9]+)?)([A-Za-z]+)?", raw)
+        if match is None:
+            return None
+
+        number = match.group(1)
+        suffix = match.group(2) or ""
+        try:
+            amount = float(number)
+        except ValueError:
+            return None
+        scaled = max(amount * factor, amount)
+        if float(scaled).is_integer():
+            return f"{int(scaled)}{suffix}"
+        return f"{scaled:g}{suffix}"
+
+    def _oomkill_memory_value(self, anomaly: Anomaly, key: str) -> str | None:
+        metrics = anomaly.get("metrics") if isinstance(anomaly.get("metrics"), dict) else {}
+        value = str(metrics.get(key) or "").strip()
+        return value or None
+
+    def _oomkill_scaled_memory_value(self, anomaly: Anomaly, key: str) -> str | None:
+        current_value = self._oomkill_memory_value(anomaly, key)
+        return self._scale_memory_value(current_value or "", factor=1.5)
 
     def _workload_follow_up(self, anomaly: Anomaly) -> str:
         workload_kind = str(anomaly.get("workload_kind") or "Pod")

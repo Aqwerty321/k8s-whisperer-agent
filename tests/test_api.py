@@ -183,6 +183,35 @@ def test_incident_summary_endpoints_return_combined_views() -> None:
     assert summary_response.json()["audit_count"] >= 1
 
 
+def test_incident_summary_derives_completed_status_for_benign_restart_replacement() -> None:
+    with TestClient(app) as client:
+        client.app.state.runtime._latest_states["incident-summary-benign-restart"] = {
+            "incident_id": "incident-summary-benign-restart",
+            "status": "error",
+            "namespace": "default",
+            "awaiting_human": False,
+            "approved": True,
+            "error": "Pod was not found. It may have already restarted or been deleted.",
+            "result": "Restart request accepted. Original pod no longer exists and may have been replaced already. Follow up on workload health if the issue persists.",
+            "anomalies": [
+                {
+                    "anomaly_type": "CrashLoopBackOff",
+                    "resource_name": "demo-crashloop",
+                }
+            ],
+            "plan": {"action": "restart_pod"},
+        }
+
+        list_response = client.get("/api/incidents")
+        summary_response = client.get("/api/incidents/incident-summary-benign-restart/summary")
+
+    assert list_response.status_code == 200
+    assert summary_response.status_code == 200
+    listed = next(item for item in list_response.json()["incidents"] if item["incident_id"] == "incident-summary-benign-restart")
+    assert listed["status"] == "completed"
+    assert summary_response.json()["incident"]["status"] == "completed"
+
+
 def test_incident_report_endpoint_returns_markdown() -> None:
     with TestClient(app) as client:
         client.app.state.runtime._latest_states["incident-report-1"] = {
@@ -205,7 +234,11 @@ def test_incident_report_endpoint_returns_markdown() -> None:
                 "target_name": "demo-oomkill",
                 "blast_radius": "medium",
                 "requires_human": True,
-                "parameters": {"recommendation": "Increase memory."},
+                "parameters": {
+                    "recommendation": "Increase the memory limit from 64Mi to about 96Mi.",
+                    "current_memory_limit": "64Mi",
+                    "suggested_memory_limit": "96Mi",
+                },
             },
         }
         client.app.state.audit_logger.log(
@@ -225,6 +258,7 @@ def test_incident_report_endpoint_returns_markdown() -> None:
     assert "# Incident Report: incident-report-1" in response.text
     assert "## Result" in response.text
     assert "Operator rejected remediation" in response.text
+    assert "96Mi" in response.text
 
 
 def test_attest_endpoint_uses_runtime_incident_when_available() -> None:
@@ -289,6 +323,51 @@ def test_attest_endpoint_falls_back_to_audit_record() -> None:
     assert payload["record"]["incident_id"] == "incident-attest-audit-1"
     assert payload["record"]["anomaly"]["anomaly_type"] == "OOMKilled"
     assert "attestation" in payload
+
+
+def test_attestation_proof_endpoint_exposes_public_verification_context() -> None:
+    with TestClient(app) as client:
+        client.app.state.runtime._latest_states["incident-proof-1"] = {
+            "incident_id": "incident-proof-1",
+            "status": "completed",
+            "namespace": "default",
+            "awaiting_human": False,
+            "approved": True,
+            "diagnosis": "CrashLoop recovered after restart.",
+            "diagnosis_evidence": ["logs: crashloop recovered"],
+            "result": "Restarted pod and verified recovery.",
+            "updated_at": "2026-03-30T00:00:00Z",
+            "attestation_tx_id": "stellar-proof-tx-1",
+            "anomalies": [
+                {
+                    "anomaly_type": "CrashLoopBackOff",
+                    "resource_kind": "Pod",
+                    "resource_name": "demo-crashloop",
+                    "workload_kind": "Deployment",
+                    "workload_name": "demo-crashloop",
+                    "summary": "Pod is crashlooping.",
+                }
+            ],
+            "plan": {
+                "action": "restart_pod",
+                "target_kind": "Pod",
+                "target_name": "demo-crashloop",
+                "blast_radius": "low",
+                "requires_human": False,
+            },
+        }
+
+        response = client.get("/api/attest/incident-proof-1/proof")
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["incident_id"] == "incident-proof-1"
+    assert payload["contract_key"].startswith("incident_")
+    assert payload["tx_id"] == "stellar-proof-tx-1"
+    assert payload["incident_hash"] == hash_incident_record(payload["record"])
+    assert payload["soroban"]["network"] == app.state.settings.stellar_network
+    assert payload["soroban"]["network_passphrase"]
+    assert "verify_enabled" in payload["soroban"]
 
 
 def test_attest_verify_endpoint_uses_persisted_tx_id_from_audit() -> None:

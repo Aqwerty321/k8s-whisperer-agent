@@ -257,6 +257,7 @@ def make_execute_node(deps: AgentDependencies):
                 workload_kind = str(plan.get("parameters", {}).get("target_workload_kind") or target_kind)
                 workload_name = str(plan.get("parameters", {}).get("target_workload_name") or target_name)
                 if workload_kind == "Deployment":
+                    memory_change = _format_memory_change(plan)
                     outcome = deps.k8s_client.patch_workload(
                         kind=workload_kind,
                         name=workload_name,
@@ -273,6 +274,8 @@ def make_execute_node(deps: AgentDependencies):
                         f"Patched {workload_kind} {namespace}/{workload_name}. "
                         f"Rollout: {verification.get('message')}"
                     )
+                    if memory_change:
+                        result = f"{result} Memory: {memory_change}."
                     if not outcome.get("ok"):
                         return {
                             "result": outcome.get("message", result),
@@ -569,6 +572,25 @@ def _observed_namespaces(state: WhisperState, settings: Settings) -> list[str]:
 def _requires_cpu_throttling_verification(state: WhisperState) -> bool:
     anomaly = latest_anomaly(state)
     return bool(anomaly and anomaly.get("anomaly_type") == "CPUThrottling")
+
+
+def _format_memory_change(plan: dict[str, object]) -> str | None:
+    parameters = plan.get("parameters")
+    if not isinstance(parameters, dict):
+        return None
+    current_limit = str(parameters.get("current_memory_limit") or "").strip()
+    suggested_limit = str(parameters.get("suggested_memory_limit") or "").strip()
+    current_request = str(parameters.get("current_memory_request") or "").strip()
+    suggested_request = str(parameters.get("suggested_memory_request") or "").strip()
+
+    details: list[str] = []
+    if current_limit and suggested_limit:
+        details.append(f"limit {current_limit} -> {suggested_limit}")
+    if current_request and suggested_request:
+        details.append(f"request {current_request} -> {suggested_request}")
+    if not details:
+        return None
+    return ", ".join(details)
 
 
 def _prioritize_anomalies(anomalies: list[dict[str, object]]) -> list[dict[str, object]]:

@@ -366,6 +366,24 @@ class FakePrometheusClient(PrometheusClient):
         }
 
 
+class StubLLMResponse:
+    def __init__(self, content) -> None:
+        self.content = content
+
+
+class StubChatClient:
+    def __init__(self, responses: list[object]) -> None:
+        self._responses = list(responses)
+
+    def invoke(self, prompt: str):
+        if not self._responses:
+            raise AssertionError(f"Unexpected extra LLM invocation: {prompt[:120]}")
+        response = self._responses.pop(0)
+        if isinstance(response, Exception):
+            raise response
+        return StubLLMResponse(response)
+
+
 class NotFoundAfterRestartK8sClient(FakeK8sClient):
     def verify_pod_recovery(self, **kwargs):
         return {
@@ -543,6 +561,51 @@ def test_runtime_does_not_hydrate_empty_checkpoint_shell_on_startup(tmp_path) ->
 def test_runtime_routes_oomkill_to_hitl_recommendation(tmp_path) -> None:
     k8s_client = FakeK8sClient()
     k8s_client.mode = "oomkill"
+    k8s_client.get_cluster_snapshot = lambda namespace: {
+        "pods": [
+            {
+                "name": "demo-oomkill",
+                "namespace": namespace,
+                "phase": "Running",
+                "reason": None,
+                "owner_kind": "Deployment",
+                "owner_name": "demo-oomkill",
+                "restart_count": 1,
+                "waiting_reasons": [],
+                "container_statuses": [
+                    {
+                        "name": "memory-hog",
+                        "restart_count": 1,
+                        "waiting_reason": None,
+                        "terminated_reason": "OOMKilled",
+                        "ready": False,
+                    }
+                ],
+            }
+        ],
+        "deployments": [
+            {
+                "name": "demo-oomkill",
+                "namespace": namespace,
+                "replicas": 1,
+                "updated_replicas": 1,
+                "ready_replicas": 1,
+                "available_replicas": 1,
+                "stalled_seconds": None,
+                "containers": [
+                    {
+                        "name": "memory-hog",
+                        "resources": {
+                            "limits": {"memory": "64Mi"},
+                            "requests": {"memory": "32Mi"},
+                        },
+                    }
+                ],
+            }
+        ],
+        "events": [],
+        "error": None,
+    }
     slack_client = RecordingSlackClient()
     runtime = build_runtime(tmp_path=tmp_path, k8s_client=k8s_client, slack_client=slack_client)
 
@@ -551,7 +614,10 @@ def test_runtime_routes_oomkill_to_hitl_recommendation(tmp_path) -> None:
     assert result["status"] == "awaiting_human"
     assert result["plan"]["action"] == "patch_pod"
     assert result["plan"]["requires_human"] is True
-    assert "memory limit" in result["plan"]["parameters"]["recommendation"]
+    assert "64Mi" in result["plan"]["parameters"]["recommendation"]
+    assert "96Mi" in result["plan"]["parameters"]["recommendation"]
+    assert result["plan"]["parameters"]["current_memory_limit"] == "64Mi"
+    assert result["plan"]["parameters"]["suggested_memory_limit"] == "96Mi"
     assert len(result["anomalies"]) == 1
     assert result["anomalies"][0]["anomaly_type"] == "OOMKilled"
     assert result["anomalies"][0]["resource_name"] == "demo-oomkill"
@@ -744,6 +810,80 @@ def test_runtime_detects_deployment_stalled_from_snapshot(tmp_path) -> None:
     assert any("stalled seconds" in item for item in result["diagnosis_evidence"])
 
 
+def test_runtime_llm_detection_adds_valid_anomaly_without_breaking_flow(tmp_path) -> None:
+    k8s_client = FakeK8sClient()
+    k8s_client.get_cluster_snapshot = lambda namespace: {
+        "pods": [],
+        "deployments": [],
+        "nodes": [],
+        "events": [
+            {
+                "type": "Warning",
+                "reason": "BackOff",
+                "message": "Back-off pulling image \"ghcr.io/acme/private-api:v2\"",
+                "namespace": namespace,
+                "resource_name": "demo-imagepull",
+                "resource_kind": "Pod",
+            }
+        ],
+        "error": None,
+    }
+    llm_client = LLMClient(api_key="test-key")
+    llm_client._client = StubChatClient(
+        [
+            '{"anomalies":[{"anomaly_type":"ImagePullBackOff","resource_name":"demo-imagepull","resource_kind":"Pod","namespace":"default","severity":"medium","summary":"Image pulls are failing for demo-imagepull.","confidence":0.72,"evidence":["registry authentication failed"]}]}'
+        ]
+    )
+    runtime = build_runtime(tmp_path=tmp_path, k8s_client=k8s_client, llm_client=llm_client)
+
+    result = runtime.run_once(namespace="default")
+
+    assert result["status"] == "awaiting_human"
+    assert result["anomalies"]
+    assert result["anomalies"][0]["anomaly_type"] == "ImagePullBackOff"
+    assert result["anomalies"][0]["resource_name"] == "demo-imagepull"
+    assert "registry authentication failed" in result["anomalies"][0]["evidence"]
+
+
+def test_runtime_llm_detection_enriches_existing_heuristic_anomaly(tmp_path) -> None:
+    llm_client = LLMClient(api_key="test-key")
+    llm_client._client = StubChatClient(
+        [
+            '{"anomalies":[{"anomaly_type":"OOMKilled","resource_name":"demo-oomkill","resource_kind":"Pod","namespace":"default","severity":"high","summary":"Pod demo-oomkill exceeded its memory limit.","confidence":0.91,"evidence":["kernel terminated container due to memory pressure"]}]}',
+            "LLM diagnosis",
+            "LLM explanation",
+        ]
+    )
+    k8s_client = FakeK8sClient()
+    k8s_client.mode = "oomkill"
+    runtime = build_runtime(tmp_path=tmp_path, k8s_client=k8s_client, llm_client=llm_client)
+
+    result = runtime.run_once(namespace="default")
+
+    anomaly = result["anomalies"][0]
+    assert anomaly["anomaly_type"] == "OOMKilled"
+    assert anomaly["confidence"] == 0.91
+    assert "kernel terminated container due to memory pressure" in anomaly["evidence"]
+
+
+def test_runtime_ignores_malformed_llm_detection_output(tmp_path) -> None:
+    llm_client = LLMClient(api_key="test-key")
+    llm_client._client = StubChatClient([
+        "not json at all",
+        "LLM diagnosis",
+        "LLM explanation",
+    ])
+    k8s_client = FakeK8sClient()
+    k8s_client.mode = "oomkill"
+    runtime = build_runtime(tmp_path=tmp_path, k8s_client=k8s_client, llm_client=llm_client)
+
+    result = runtime.run_once(namespace="default")
+
+    assert result["anomalies"]
+    assert result["anomalies"][0]["anomaly_type"] == "OOMKilled"
+    assert result["anomalies"][0]["resource_name"] == "demo-oomkill"
+
+
 def test_runtime_does_not_flag_fresh_pending_pod_before_threshold(tmp_path) -> None:
     k8s_client = FakeK8sClient()
     k8s_client.mode = "pending"
@@ -919,7 +1059,26 @@ def test_runtime_executes_real_workload_patch_for_deployment_owned_oomkill(tmp_p
                 ],
             }
         ],
-        "deployments": [],
+        "deployments": [
+            {
+                "name": "demo-oomkill",
+                "namespace": namespace,
+                "replicas": 1,
+                "updated_replicas": 1,
+                "ready_replicas": 1,
+                "available_replicas": 1,
+                "stalled_seconds": None,
+                "containers": [
+                    {
+                        "name": "memory-hog",
+                        "resources": {
+                            "limits": {"memory": "64Mi"},
+                            "requests": {"memory": "32Mi"},
+                        },
+                    }
+                ],
+            }
+        ],
         "nodes": [],
         "events": [],
         "error": None,
@@ -943,8 +1102,11 @@ def test_runtime_executes_real_workload_patch_for_deployment_owned_oomkill(tmp_p
     assert kind == "Deployment"
     assert namespace == "default"
     assert name == "demo-oomkill"
+    assert patch["spec"]["template"]["spec"]["containers"][0]["name"] == "memory-hog"
     assert patch["spec"]["template"]["spec"]["containers"][0]["resources"]["limits"]["memory"] == "96Mi"
+    assert patch["spec"]["template"]["spec"]["containers"][0]["resources"]["requests"]["memory"] == "48Mi"
     assert "rollout completed successfully" in completed["result"]
+    assert "Memory: limit 64Mi -> 96Mi, request 32Mi -> 48Mi." in completed["result"]
 
 
 def test_runtime_prefers_owned_workload_anomaly_for_seeded_oomkill(tmp_path) -> None:
@@ -1050,6 +1212,57 @@ def test_runtime_default_profile_keeps_deployment_owned_oomkill_as_recommendatio
     assert completed["status"] == "completed"
     assert not k8s_client.patched_workloads
     assert "Patch action requires human implementation" in completed["result"]
+
+
+def test_runtime_oomkill_patch_falls_back_to_legacy_demo_values_without_deployment_resources(tmp_path) -> None:
+    settings = build_settings(tmp_path).model_copy(update={"allow_workload_patches": True})
+    k8s_client = FakeK8sClient()
+    k8s_client.mode = "oomkill"
+    k8s_client.get_cluster_snapshot = lambda namespace: {
+        "pods": [
+            {
+                "name": "demo-oomkill-abc123",
+                "namespace": namespace,
+                "phase": "Running",
+                "reason": None,
+                "owner_kind": "Deployment",
+                "owner_name": "demo-oomkill",
+                "restart_count": 1,
+                "waiting_reasons": [],
+                "container_statuses": [
+                    {
+                        "name": "memory-hog",
+                        "restart_count": 1,
+                        "waiting_reason": None,
+                        "terminated_reason": "OOMKilled",
+                        "ready": False,
+                    }
+                ],
+            }
+        ],
+        "deployments": [],
+        "nodes": [],
+        "events": [],
+        "error": None,
+    }
+    runtime = AgentRuntime(
+        settings=settings,
+        audit_logger=AuditLogger(settings.audit_log_path),
+        k8s_client=k8s_client,
+        llm_client=LLMClient(api_key="", allow_workload_patches=True),
+        prometheus_client=FakePrometheusClient(),
+        slack_client=RecordingSlackClient(),
+    )
+
+    pending = runtime.run_once(namespace="default")
+    completed = runtime.resume_incident(incident_id=pending["incident_id"], approved=True)
+
+    assert completed["status"] == "completed"
+    assert k8s_client.patched_workloads
+    _, _, _, patch = k8s_client.patched_workloads[0]
+    assert patch["spec"]["template"]["spec"]["containers"][0]["name"] == "memory-hog"
+    assert patch["spec"]["template"]["spec"]["containers"][0]["resources"]["limits"]["memory"] == "96Mi"
+    assert patch["spec"]["template"]["spec"]["containers"][0]["resources"]["requests"]["memory"] == "48Mi"
 
 
 def test_runtime_records_structured_diagnosis_evidence(tmp_path) -> None:

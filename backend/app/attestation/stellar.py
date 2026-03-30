@@ -16,6 +16,10 @@ NETWORK_PASSPHRASES = {
 }
 
 
+def network_passphrase_for(network: str) -> str:
+    return NETWORK_PASSPHRASES.get(str(network).lower(), network)
+
+
 class StellarAttestor:
     def __init__(
         self,
@@ -199,4 +203,4 @@ class StellarAttestor:
             }
 
     def _network_passphrase(self) -> str:
-        return NETWORK_PASSPHRASES.get(self.network.lower(), self.network)
+        return network_passphrase_for(self.network)
