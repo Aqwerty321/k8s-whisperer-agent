@@ -1,5 +1,6 @@
 from pathlib import Path
 
+from backend.app.agent.nodes import _summarize_logs
 from backend.app.agent.graph import AgentRuntime
 from backend.app.audit import AuditLogger
 from backend.app.config import Settings
@@ -925,6 +926,42 @@ def test_runtime_records_structured_diagnosis_evidence(tmp_path) -> None:
 
     assert result["diagnosis_evidence"]
     assert any(item.startswith("logs:") or item.startswith("event ") for item in result["diagnosis_evidence"])
+
+
+def test_summarize_logs_keeps_interesting_lines_and_tail_context() -> None:
+    logs = "\n".join(
+        [
+            "Starting worker",
+            "Loading config",
+            "Listening on :8080",
+            "heartbeat ok",
+            "heartbeat ok",
+            "ERROR database connection refused",
+            "retrying request",
+            "user traffic steady",
+            "Exception while syncing cache",
+            "cleanup running",
+            "shutdown requested",
+            "final flush complete",
+            "process exiting",
+        ]
+    )
+
+    summary = _summarize_logs(logs, max_lines=8, max_chars=500)
+
+    assert "Starting worker" in summary
+    assert "Loading config" in summary
+    assert "ERROR database connection refused" in summary
+    assert "Exception while syncing cache" in summary
+    assert "shutdown requested" in summary
+    assert "process exiting" in summary
+    assert "omitted" in summary
+
+
+def test_summarize_logs_passes_through_short_logs() -> None:
+    logs = "application crashed with exit code 1"
+
+    assert _summarize_logs(logs) == logs
 
 
 def test_runtime_surfaces_image_pull_details_in_recommendation_and_evidence(tmp_path) -> None:

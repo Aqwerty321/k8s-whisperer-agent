@@ -88,7 +88,8 @@ def make_diagnose_node(deps: AgentDependencies):
             logs = ""
             pod_description = deps.k8s_client.describe_deployment(name=resource_name, namespace=namespace)
         else:
-            logs = deps.k8s_client.get_pod_logs(name=resource_name, namespace=namespace)
+            raw_logs = deps.k8s_client.get_pod_logs(name=resource_name, namespace=namespace)
+            logs = _summarize_logs(raw_logs)
             pod_description = deps.k8s_client.describe_pod(name=resource_name, namespace=namespace)
         diagnosis = deps.llm_client.diagnose(
             anomaly=anomaly,
@@ -465,6 +466,69 @@ def _build_diagnosis_evidence(
     if log_entry and log_entry not in evidence and len(evidence) < 10:
         evidence.append(log_entry)
     return evidence[:10]
+
+
+def _summarize_logs(logs: str, *, max_lines: int = 12, max_chars: int = 2000) -> str:
+    if not logs or "Unable to fetch logs" in logs:
+        return logs
+
+    lines = [line.strip() for line in logs.splitlines() if line.strip()]
+    if not lines:
+        return ""
+
+    if len(lines) <= max_lines and len(logs) <= max_chars:
+        return logs
+
+    selected: list[str] = []
+    seen: set[str] = set()
+
+    for line in lines[:3]:
+        _append_log_line(selected, seen, line)
+
+    for line in lines:
+        if len(selected) >= max_lines - 3:
+            break
+        if _looks_interesting_log_line(line):
+            _append_log_line(selected, seen, line)
+
+    for line in lines[-3:]:
+        if len(selected) >= max_lines:
+            break
+        _append_log_line(selected, seen, line)
+
+    summary = "\n".join(selected)
+    if len(summary) > max_chars:
+        summary = summary[: max_chars - 3].rstrip() + "..."
+    omitted = max(len(lines) - len(selected), 0)
+    if omitted > 0 and len(summary) + 32 < max_chars:
+        summary = f"{summary}\n... omitted {omitted} log lines ..."
+    return summary
+
+
+def _append_log_line(selected: list[str], seen: set[str], line: str) -> None:
+    normalized = line.strip()
+    if not normalized or normalized in seen:
+        return
+    seen.add(normalized)
+    selected.append(normalized)
+
+
+def _looks_interesting_log_line(line: str) -> bool:
+    lower = line.lower()
+    keywords = (
+        "error",
+        "exception",
+        "failed",
+        "fatal",
+        "panic",
+        "timeout",
+        "oom",
+        "refused",
+        "back-off",
+        "permission",
+        "denied",
+    )
+    return any(keyword in lower for keyword in keywords)
 
 
 def _timeline_for_state(state: WhisperState) -> list[str]:
