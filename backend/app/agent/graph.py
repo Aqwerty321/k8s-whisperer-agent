@@ -277,12 +277,12 @@ def _scoped_anomalies(values: dict[str, Any]) -> list[Any]:
 
     seeded_resource_names = {str(name) for name in values.get("seeded_resource_names", []) if name}
     if not seeded_resource_names:
-        plan = values.get("plan") or {}
-        target_name = str(plan.get("target_name") or "")
-        if target_name:
-            seeded_resource_names = {target_name}
-    if not seeded_resource_names:
         return anomalies
 
-    filtered = [anomaly for anomaly in anomalies if str(anomaly.get("resource_name") or "") in seeded_resource_names]
+    filtered = [
+        anomaly
+        for anomaly in anomalies
+        if str(anomaly.get("resource_name") or "") in seeded_resource_names
+        or str(anomaly.get("workload_name") or "") in seeded_resource_names
+    ]
     return filtered or anomalies

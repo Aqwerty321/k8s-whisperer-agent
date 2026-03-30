@@ -16,7 +16,7 @@
 - Slack inbound approvals: FastAPI webhook endpoints
 - Public callback tunnel: one simple tunnel only, prefer `cloudflared`
 - Demo cluster: `minikube`
-- Kubernetes access: tightly scoped pod writes plus read-only node access
+- Kubernetes access: tightly scoped pod writes plus optional read-only node access
 - Prometheus: optional and non-blocking
 - Optional blockchain bonus: Stellar only, isolated from the remediation control loop
 
@@ -173,7 +173,7 @@ explain_log -> observe
 ### `observe_node`
 - Collect cluster events, pod summaries, node summaries, and lightweight workload context.
 - Normalize data into shared state.
-- Keep first implementation simple: namespace-scoped pod operations with read-only node observation.
+- Keep first implementation simple: namespace-scoped pod operations with optional read-only node observation.
 
 ### `detect_node`
 - Convert observed signals into typed anomalies.
@@ -230,7 +230,7 @@ explain_log -> observe
   - describe-equivalent summary fetch
   - delete pod
   - patch targeted pod or workload fields only where explicitly allowed
-- RBAC keeps pod writes namespace-scoped and adds cluster-scoped read-only node observation.
+- RBAC keeps pod writes namespace-scoped by default; optional node observation can be enabled separately with read-only node access.
 
 ## MCP Plan
 - Add proper MCP server modules for `kubectl` and Slack to satisfy the rubric expectation.

@@ -50,8 +50,9 @@ The scaffold follows the PS1 control loop directly:
 - The evidence is merged into the anomaly record rather than being lost between nodes.
 - The plan now gives a concrete operator recommendation based on the scheduling reason, such as insufficient memory, CPU pressure, selectors, or taints.
 
-## Read-Only Node Path
-- `NodeNotReady` is detected from the observed node snapshot when the `Ready` condition is `False`.
+## Optional Read-Only Node Path
+- `NodeNotReady` can be detected from the observed node snapshot when the `Ready` condition is `False`.
+- This path is gated behind optional node-read observation so the default manifest can stay pod-scoped.
 - Diagnose uses serialized node condition evidence instead of pod logs.
 - Plan is escalation-only and never mutates nodes.
 
@@ -100,5 +101,5 @@ The scaffold follows the PS1 control loop directly:
 - Auto-remediation only for low blast-radius, above-threshold plans.
 - Destructive actions are denylisted by default.
 - Human approval is explicit and resumes the graph instead of bypassing it.
-- Pod writes remain namespace-scoped, while node access is read-only.
+- Pod writes remain namespace-scoped by default. Optional node access is read-only when explicitly enabled.
 - Blockchain is not part of the live remediation loop.

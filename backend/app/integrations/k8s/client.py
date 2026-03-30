@@ -44,7 +44,7 @@ class K8sClient:
         self._ensure_client()
         return {
             "pods": self.get_pods(namespace),
-            "nodes": self.get_nodes(),
+            "deployments": self.get_deployments(namespace),
             "events": self.get_events(namespace),
             "error": self._load_error,
         }
@@ -93,6 +93,18 @@ class K8sClient:
         try:
             nodes = self._core_v1.list_node().items
             return [self._serialize_node(node) for node in nodes]
+        except Exception as exc:
+            self._load_error = str(exc)
+            return []
+
+    def get_deployments(self, namespace: str) -> list[dict[str, Any]]:
+        self._ensure_client()
+        if self._apps_v1 is None:
+            return []
+
+        try:
+            deployments = self._apps_v1.list_namespaced_deployment(namespace=namespace).items
+            return [self._serialize_deployment(deployment) for deployment in deployments]
         except Exception as exc:
             self._load_error = str(exc)
             return []
@@ -168,6 +180,39 @@ class K8sClient:
             return {
                 "name": name,
                 "node": None,
+                "events": [],
+                "error": self._format_error(exc),
+            }
+
+    def describe_deployment(self, name: str, namespace: str) -> dict[str, Any]:
+        self._ensure_client()
+        if self._apps_v1 is None or self._core_v1 is None:
+            return {
+                "name": name,
+                "namespace": namespace,
+                "deployment": None,
+                "events": [],
+                "error": self._load_error or "Kubernetes client is not configured.",
+            }
+
+        try:
+            deployment = self._apps_v1.read_namespaced_deployment(name=name, namespace=namespace)
+            related_events = self._core_v1.list_namespaced_event(
+                namespace=namespace,
+                field_selector=f"involvedObject.name={name},involvedObject.kind=Deployment",
+            ).items
+            return {
+                "name": name,
+                "namespace": namespace,
+                "deployment": self._serialize_deployment(deployment),
+                "events": [self._serialize_event(event) for event in related_events],
+                "error": None,
+            }
+        except Exception as exc:
+            return {
+                "name": name,
+                "namespace": namespace,
+                "deployment": None,
                 "events": [],
                 "error": self._format_error(exc),
             }
@@ -503,6 +548,39 @@ class K8sClient:
                 for condition in conditions
             ],
         }
+
+    def _serialize_deployment(self, deployment: Any) -> dict[str, Any]:
+        metadata = getattr(deployment, "metadata", None)
+        spec = getattr(deployment, "spec", None)
+        status = getattr(deployment, "status", None)
+        replicas = int(getattr(spec, "replicas", 1) or 1)
+        updated_replicas = int(getattr(status, "updated_replicas", 0) or 0)
+        ready_replicas = int(getattr(status, "ready_replicas", 0) or 0)
+        available_replicas = int(getattr(status, "available_replicas", 0) or 0)
+        unavailable_replicas = int(getattr(status, "unavailable_replicas", 0) or 0)
+        return {
+            "name": getattr(metadata, "name", "unknown"),
+            "namespace": getattr(metadata, "namespace", "default"),
+            "created_at": self._serialize_datetime(getattr(metadata, "creation_timestamp", None)),
+            "age_seconds": self._age_seconds(getattr(metadata, "creation_timestamp", None)),
+            "generation": int(getattr(metadata, "generation", 0) or 0),
+            "observed_generation": int(getattr(status, "observed_generation", 0) or 0),
+            "replicas": replicas,
+            "updated_replicas": updated_replicas,
+            "ready_replicas": ready_replicas,
+            "available_replicas": available_replicas,
+            "unavailable_replicas": unavailable_replicas,
+            "stalled_seconds": self._deployment_stalled_seconds(
+                created_at=getattr(metadata, "creation_timestamp", None),
+                replicas=replicas,
+                updated_replicas=updated_replicas,
+            ),
+        }
+
+    def _deployment_stalled_seconds(self, *, created_at: Any, replicas: int, updated_replicas: int) -> int | None:
+        if replicas <= 0 or updated_replicas >= replicas:
+            return None
+        return self._age_seconds(created_at)
 
     def _node_ready_condition(self, node: Any) -> Any | None:
         conditions = getattr(getattr(node, "status", None), "conditions", None) or []

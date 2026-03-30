@@ -15,6 +15,7 @@ def test_backend_manifest_uses_service_account_and_health_probes() -> None:
 
     assert "serviceAccountName: k8s-whisperer-sa" in manifest
     assert 'name: ALLOW_WORKLOAD_PATCHES' in manifest
+    assert 'name: ENABLE_NODE_READ_OBSERVATION' in manifest
     assert 'value: "false"' in manifest
     assert "readinessProbe:" in manifest
     assert "livenessProbe:" in manifest
@@ -58,8 +59,8 @@ def test_deploy_demo_resets_crashloop_state() -> None:
 
     assert "minikube ssh -- \"sudo rm -rf /tmp/k8s-whisperer-demo-crashloop && sudo mkdir -p /tmp/k8s-whisperer-demo-crashloop\"" in script
     assert "kubectl delete deployment demo-crashloop -n default --ignore-not-found" in script
-    assert "kubectl delete pod demo-oomkill -n default --ignore-not-found" in script
-    assert "kubectl rollout status deployment/demo-oomkill -n default" in script
+    assert "kubectl delete deployment demo-oomkill -n default --ignore-not-found" in script
+    assert "wait_for_labeled_pod \"app=demo-oomkill\" default" in script
 
 
 def test_backend_manifest_uses_persistent_runtime_volume_and_tuned_probes() -> None:
@@ -84,9 +85,8 @@ def test_makefile_includes_demo_reset_and_ready_targets() -> None:
 def test_demo_reset_script_clears_runtime_files() -> None:
     script = Path("scripts/demo_reset.sh").read_text(encoding="utf-8")
 
-    assert "langgraph-checkpoints.pkl" in script
-    assert "audit.jsonl" in script
-    assert script.count("kubectl rollout restart deployment/k8s-whisperer -n default") >= 2
+    assert "/api/demo/reset" in script
+    assert "kubectl port-forward svc/k8s-whisperer 18010:8010" in script
 
 
 def test_backup_approval_script_signs_local_callback() -> None:
@@ -142,10 +142,10 @@ def test_rbac_stays_pod_scoped_by_default() -> None:
     assert 'resources: ["pods"]' in manifest
     assert 'resources: ["pods/log"]' in manifest
     assert 'resources: ["events"]' in manifest
-    assert 'resources: ["nodes"]' in manifest
+    assert 'resources: ["nodes"]' not in manifest
     assert 'resources: ["deployments"]' not in manifest
-    assert 'verbs: ["get", "list", "watch"]' in manifest
-    assert 'verbs: ["patch"]' not in manifest.split('resources: ["nodes"]', 1)[1]
+    assert 'kind: ClusterRole' not in manifest
+    assert 'kind: ClusterRoleBinding' not in manifest
 
 
 def test_rubric_mapping_doc_mentions_safety_and_demoability() -> None:

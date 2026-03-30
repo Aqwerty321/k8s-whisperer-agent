@@ -10,6 +10,7 @@ from ...models import Anomaly, RemediationPlan
 class LLMClient:
     ABSENT_POD_OOM_EVENT_MAX_AGE_SECONDS = 300
     PENDING_POD_MIN_AGE_SECONDS = 300
+    DEPLOYMENT_STALLED_MIN_AGE_SECONDS = 600
 
     def __init__(self, *, api_key: str, model: str = "gemini-1.5-flash", allow_workload_patches: bool = False) -> None:
         self.api_key = api_key
@@ -44,6 +45,7 @@ class LLMClient:
                 if pod is None:
                     if not self._keep_absent_pod_event(anomaly=anomaly, event=event):
                         continue
+                    self._enrich_absent_seeded_oom_with_matching_workload(anomaly, pods_by_name)
                 else:
                     self._enrich_anomaly_with_pod_owner(anomaly, pod)
             key = (anomaly["anomaly_type"], anomaly["resource_name"])
@@ -65,6 +67,17 @@ class LLMClient:
 
         for node in cluster_state.get("nodes", []):
             anomaly = self._node_to_anomaly(node, namespace=namespace)
+            if anomaly is None:
+                continue
+            key = (anomaly["anomaly_type"], anomaly["resource_name"])
+            if key in seen:
+                self._merge_evidence(anomalies, anomaly)
+                continue
+            anomalies.append(anomaly)
+            seen.add(key)
+
+        for deployment in cluster_state.get("deployments", []):
+            anomaly = self._deployment_to_anomaly(deployment, namespace=namespace)
             if anomaly is None:
                 continue
             key = (anomaly["anomaly_type"], anomaly["resource_name"])
@@ -166,20 +179,26 @@ class LLMClient:
                 "target_kind": anomaly.get("resource_kind", "Pod"),
                 "target_name": resource_name,
                 "namespace": namespace,
-                "parameters": {},
+                "parameters": {
+                    "recommendation": self._image_pull_recommendation(anomaly),
+                },
                 "confidence": 0.5,
                 "blast_radius": "medium",
                 "reason": diagnosis,
                 "requires_human": True,
             },
             "CPUThrottling": {
-                "action": "notify_only",
+                "action": "patch_pod",
                 "target_kind": anomaly.get("resource_kind", "Pod"),
                 "target_name": resource_name,
                 "namespace": namespace,
                 "parameters": {
                     "recommendation": self._cpu_throttling_recommendation(anomaly),
                     "observed_ratio": anomaly.get("metrics", {}).get("cpu_throttling_ratio"),
+                    "suggested_cpu_factor": 1.5,
+                    "target_workload_kind": anomaly.get("workload_kind", "Pod"),
+                    "target_workload_name": anomaly.get("workload_name", resource_name),
+                    "patch": self._cpu_throttling_patch(anomaly),
                 },
                 "confidence": 0.58,
                 "blast_radius": "medium",
@@ -335,6 +354,7 @@ class LLMClient:
                 namespace=namespace,
                 summary=message or "Image pull failed for this pod.",
                 confidence=0.74,
+                evidence=[reason or "ImagePullBackOff", message or "Image pull failed for the container image."],
             )
 
         if "evicted" in combined:
@@ -346,6 +366,7 @@ class LLMClient:
                 namespace=namespace,
                 summary=message or "Pod was evicted from its node.",
                 confidence=0.79,
+                evidence=[reason or "Evicted", message or "Pod was evicted by the kubelet."] ,
             )
 
         return None
@@ -410,6 +431,27 @@ class LLMClient:
                 workload_name=str(pod.get("owner_name") or name),
                 summary=f"Pod {name} is in ImagePullBackOff.",
                 confidence=0.78,
+                evidence=[
+                    f"pod phase: {phase}",
+                    "waiting reason: ImagePullBackOff",
+                ],
+            )
+
+        if str(pod.get("reason") or "") == "Evicted":
+            return self._build_anomaly(
+                anomaly_type="EvictedPod",
+                severity="low",
+                resource_kind="Pod",
+                resource_name=name,
+                namespace=namespace,
+                workload_kind=str(pod.get("owner_kind") or "Pod"),
+                workload_name=str(pod.get("owner_name") or name),
+                summary=f"Pod {name} was evicted from its node.",
+                confidence=0.8,
+                evidence=[
+                    "pod status reason: Evicted",
+                    f"pod phase: {phase}",
+                ],
             )
 
         return None
@@ -514,7 +556,7 @@ class LLMClient:
 
         return self._build_anomaly(
             anomaly_type="NodeNotReady",
-            severity="high",
+            severity="critical",
             resource_kind="Node",
             resource_name=name,
             namespace=namespace,
@@ -523,6 +565,33 @@ class LLMClient:
             summary=f"Node {name} is reporting NotReady.",
             confidence=0.81,
             evidence=evidence,
+        )
+
+    def _deployment_to_anomaly(self, deployment: dict[str, Any], *, namespace: str) -> Anomaly | None:
+        replicas = int(deployment.get("replicas") or 0)
+        updated_replicas = int(deployment.get("updated_replicas") or 0)
+        stalled_seconds = deployment.get("stalled_seconds")
+        if replicas <= 0 or updated_replicas >= replicas:
+            return None
+        if not isinstance(stalled_seconds, int) or stalled_seconds < self.DEPLOYMENT_STALLED_MIN_AGE_SECONDS:
+            return None
+
+        name = str(deployment.get("name") or "unknown")
+        return self._build_anomaly(
+            anomaly_type="DeploymentStalled",
+            severity="high",
+            resource_kind="Deployment",
+            resource_name=name,
+            namespace=str(deployment.get("namespace") or namespace),
+            workload_kind="Deployment",
+            workload_name=name,
+            summary=f"Deployment {name} has not finished rolling out.",
+            confidence=0.8,
+            evidence=[
+                f"updated replicas: {updated_replicas}",
+                f"desired replicas: {replicas}",
+                f"deployment stalled seconds: {stalled_seconds}",
+            ],
         )
 
     def _build_anomaly(
@@ -588,6 +657,24 @@ class LLMClient:
         if owner_name:
             anomaly["workload_name"] = owner_name
 
+    def _enrich_absent_seeded_oom_with_matching_workload(self, anomaly: Anomaly, pods_by_name: dict[str, dict[str, Any]]) -> None:
+        if anomaly.get("anomaly_type") != "OOMKilled":
+            return
+        if anomaly.get("workload_kind") and anomaly.get("workload_kind") != "Pod":
+            return
+        resource_name = str(anomaly.get("resource_name") or "")
+        if not resource_name:
+            return
+        candidates = [
+            pod
+            for pod in pods_by_name.values()
+            if str(pod.get("owner_name") or "") == resource_name
+            or str(pod.get("name") or "").startswith(f"{resource_name}-")
+        ]
+        for pod in candidates:
+            self._enrich_anomaly_with_pod_owner(anomaly, pod)
+            return
+
     def _pending_pod_evidence(self, pod: dict[str, Any]) -> list[str]:
         evidence = [f"pod phase: {pod.get('phase', 'Unknown')}"]
         reason = str(pod.get("reason") or "")
@@ -620,8 +707,35 @@ class LLMClient:
         workload = self._workload_label(anomaly)
         ratio = ((anomaly.get("metrics") or {}).get("cpu_throttling_ratio") if isinstance(anomaly.get("metrics"), dict) else None)
         if isinstance(ratio, (float, int)):
-            return f"Review CPU requests and limits for {workload}; Prometheus reports a throttling ratio of {float(ratio):.2f}."
+            return f"Increase the CPU limit for {workload} by roughly 50% and verify the throttling ratio drops below the threshold; Prometheus reports {float(ratio):.2f}."
         return f"Review CPU requests and limits for {workload}; Prometheus indicates sustained CPU throttling."
+
+    def _cpu_throttling_patch(self, anomaly: Anomaly) -> dict[str, Any] | None:
+        if not self.allow_workload_patches:
+            return None
+        workload_kind = str(anomaly.get("workload_kind") or "Pod")
+        if workload_kind != "Deployment":
+            return None
+        return {
+            "spec": {
+                "template": {
+                    "spec": {
+                        "containers": [
+                            {
+                                "name": "app",
+                                "resources": {
+                                    "limits": {"cpu": "300m"},
+                                },
+                            }
+                        ]
+                    }
+                }
+            }
+        }
+
+    def _image_pull_recommendation(self, anomaly: Anomaly) -> str:
+        workload = self._workload_label(anomaly)
+        return f"Inspect the image reference, registry credentials, and pull policy for {workload}, then alert a human operator with the failing image details."
 
     def _oomkill_recommendation(self, anomaly: Anomaly) -> str:
         workload = self._workload_label(anomaly)

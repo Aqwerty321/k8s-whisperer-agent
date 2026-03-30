@@ -7,11 +7,11 @@ K8sWhisperer is an autonomous Kubernetes incident response scaffold for PS1 of t
 - LangGraph workflow for Observe -> Detect -> Diagnose -> Plan -> Safety Gate -> Execute -> Explain/Log
 - Typed shared state model
 - Slack Web API integration and inbound webhook signature verification
-- Kubernetes client wrappers with pod-focused operations and read-only node observation
+- Kubernetes client wrappers with pod-focused operations and optional read-only node observation
 - Append-only JSON Lines audit logging
 - Disk-backed LangGraph checkpoint persistence for HITL resume across process restarts
 - MCP servers for Kubernetes, Slack, and Prometheus tools
-- Tightly scoped RBAC with namespace-scoped pod writes, read-only node access, and demo manifests for `CrashLoopBackOff`, `OOMKilled`, and `Pending Pod`
+- Tightly scoped RBAC with namespace-scoped pod writes by default, optional read-only node access, and demo manifests for `CrashLoopBackOff`, `OOMKilled`, and `Pending Pod`
 - Optional isolated Stellar bonus scaffold with backend attestation helpers, a Soroban contract skeleton, and a minimal frontend
 
 ## Implemented First-Pass Demo Path
@@ -21,7 +21,7 @@ K8sWhisperer is an autonomous Kubernetes incident response scaffold for PS1 of t
 - Real first-pass `OOMKilled` path that generates a concrete HITL recommendation to raise memory on the owning workload; the default strict profile keeps that change recommendation-only
 - Stronger `PendingPod` reasoning that turns scheduling-event evidence into a concrete operator recommendation only after the pod has remained pending for at least five minutes
 - Optional Prometheus-backed `CPUThrottling` detection that recommends CPU review when per-pod throttling exceeds the configured threshold
-- Read-only `NodeNotReady` detection that escalates with node evidence and never mutates nodes
+- Optional read-only `NodeNotReady` detection that escalates with node evidence and never mutates nodes when node observation is enabled
 - Slack approval flow that pauses the graph, acknowledges the callback immediately, and resumes it through the FastAPI webhook in the background
 - Slack incident messages now carry message correlation so follow-up explanations can update the same message when possible
 - Slack approval callbacks now update the tracked incident message immediately on approve or reject

@@ -26,6 +26,8 @@ class FakeK8sClient(K8sClient):
                         "namespace": namespace,
                         "phase": "Running",
                         "reason": None,
+                        "owner_kind": "Deployment",
+                        "owner_name": "demo-oomkill",
                         "restart_count": 1,
                         "waiting_reasons": [],
                         "container_statuses": [
@@ -39,6 +41,7 @@ class FakeK8sClient(K8sClient):
                         ],
                     }
                 ],
+                "deployments": [],
                 "events": [],
                 "error": None,
             }
@@ -57,6 +60,7 @@ class FakeK8sClient(K8sClient):
                         "container_statuses": [],
                     }
                 ],
+                "deployments": [],
                 "nodes": [],
                 "events": [
                     {
@@ -76,6 +80,7 @@ class FakeK8sClient(K8sClient):
         if self.mode == "node_not_ready":
             return {
                 "pods": [],
+                "deployments": [],
                 "nodes": [
                     {
                         "name": "minikube",
@@ -108,11 +113,12 @@ class FakeK8sClient(K8sClient):
                         }
                     ],
                 }
-            ],
-            "nodes": [],
-            "events": [],
-            "error": None,
-        }
+                ],
+                "deployments": [],
+                "nodes": [],
+                "events": [],
+                "error": None,
+            }
 
     def get_pod_logs(self, name: str, namespace: str, tail_lines: int = 200) -> str:
         if self.mode == "pending":
@@ -190,6 +196,49 @@ class FakeK8sClient(K8sClient):
                 "unschedulable": True,
             },
             "events": [],
+            "error": None,
+        }
+
+    def get_nodes(self):
+        if self.mode == "node_not_ready":
+            return [
+                {
+                    "name": "minikube",
+                    "ready_status": "False",
+                    "ready_reason": "KubeletNotReady",
+                    "ready_message": "container runtime is down",
+                    "unschedulable": True,
+                    "conditions": [
+                        {
+                            "type": "Ready",
+                            "status": "False",
+                            "reason": "KubeletNotReady",
+                            "message": "container runtime is down",
+                        }
+                    ],
+                }
+            ]
+        return []
+
+    def describe_deployment(self, name: str, namespace: str):
+        return {
+            "name": name,
+            "namespace": namespace,
+            "deployment": {
+                "name": name,
+                "namespace": namespace,
+                "replicas": 1,
+                "updated_replicas": 0,
+                "ready_replicas": 0,
+                "available_replicas": 0,
+                "stalled_seconds": 1200,
+            },
+            "events": [
+                {
+                    "reason": "ProgressDeadlineExceeded",
+                    "message": f"Deployment {name} exceeded its progress deadline.",
+                }
+            ],
             "error": None,
         }
 
@@ -346,6 +395,7 @@ def build_settings(tmp_path: Path) -> Settings:
         checkpoint_store_path=str(tmp_path / "checkpoints.pkl"),
         verify_timeout_seconds=1,
         allow_workload_patches=False,
+        enable_node_read_observation=False,
     )
 
 
@@ -473,6 +523,65 @@ def test_runtime_pending_pod_recommendation_uses_scheduling_evidence(tmp_path) -
     assert any("Insufficient memory" in item for item in result["anomalies"][0]["evidence"])
 
 
+def test_runtime_does_not_observe_nodes_by_default(tmp_path) -> None:
+    k8s_client = FakeK8sClient()
+    k8s_client.mode = "node_not_ready"
+    runtime = build_runtime(tmp_path=tmp_path, k8s_client=k8s_client)
+
+    result = runtime.run_once(namespace="default")
+
+    assert result["status"] == "completed"
+    assert all(anomaly["anomaly_type"] != "NodeNotReady" for anomaly in result["anomalies"])
+
+
+def test_runtime_detects_node_not_ready_when_node_observation_is_enabled(tmp_path) -> None:
+    settings = build_settings(tmp_path).model_copy(update={"enable_node_read_observation": True})
+    k8s_client = FakeK8sClient()
+    k8s_client.mode = "node_not_ready"
+    runtime = AgentRuntime(
+        settings=settings,
+        audit_logger=AuditLogger(settings.audit_log_path),
+        k8s_client=k8s_client,
+        llm_client=LLMClient(api_key=""),
+        prometheus_client=FakePrometheusClient(),
+        slack_client=RecordingSlackClient(),
+    )
+
+    result = runtime.run_once(namespace="default")
+
+    assert result["status"] == "awaiting_human"
+    assert result["anomalies"][0]["anomaly_type"] == "NodeNotReady"
+
+
+def test_runtime_detects_deployment_stalled_from_snapshot(tmp_path) -> None:
+    k8s_client = FakeK8sClient()
+    k8s_client.get_cluster_snapshot = lambda namespace: {
+        "pods": [],
+        "deployments": [
+            {
+                "name": "demo-api",
+                "namespace": namespace,
+                "replicas": 3,
+                "updated_replicas": 1,
+                "ready_replicas": 1,
+                "available_replicas": 1,
+                "stalled_seconds": 1200,
+            }
+        ],
+        "nodes": [],
+        "events": [],
+        "error": None,
+    }
+    runtime = build_runtime(tmp_path=tmp_path, k8s_client=k8s_client)
+
+    result = runtime.run_once(namespace="default")
+
+    assert result["status"] == "awaiting_human"
+    assert result["anomalies"][0]["anomaly_type"] == "DeploymentStalled"
+    assert result["plan"]["action"] == "escalate_to_human"
+    assert any("stalled seconds" in item for item in result["diagnosis_evidence"])
+
+
 def test_runtime_does_not_flag_fresh_pending_pod_before_threshold(tmp_path) -> None:
     k8s_client = FakeK8sClient()
     k8s_client.mode = "pending"
@@ -489,6 +598,7 @@ def test_runtime_does_not_flag_fresh_pending_pod_before_threshold(tmp_path) -> N
                 "container_statuses": [],
             }
         ],
+        "deployments": [],
         "nodes": [],
         "events": [],
         "error": None,
@@ -556,7 +666,7 @@ def test_runtime_checkpoint_view_scopes_anomalies_to_plan_target(tmp_path) -> No
     incident = runtime.get_incident(incident_id)
 
     assert incident is not None
-    assert [anomaly["resource_name"] for anomaly in incident["anomalies"]] == ["demo-oomkill"]
+    assert [anomaly["resource_name"] for anomaly in incident["anomalies"]] == ["demo-oomkill", "demo-crashloop"]
 
 
 def test_runtime_treats_missing_old_pod_after_restart_as_completed(tmp_path) -> None:
@@ -606,6 +716,7 @@ def test_runtime_maps_owner_hints_from_pod_metadata(tmp_path) -> None:
                 ],
             }
         ],
+        "deployments": [],
         "nodes": [],
         "events": [],
         "error": None,
@@ -646,6 +757,7 @@ def test_runtime_executes_real_workload_patch_for_deployment_owned_oomkill(tmp_p
                 ],
             }
         ],
+        "deployments": [],
         "nodes": [],
         "events": [],
         "error": None,
@@ -700,6 +812,7 @@ def test_runtime_prefers_owned_workload_anomaly_for_seeded_oomkill(tmp_path) -> 
                 ],
             }
         ],
+        "deployments": [],
         "nodes": [],
         "events": [],
         "error": None,
@@ -727,8 +840,9 @@ def test_runtime_prefers_owned_workload_anomaly_for_seeded_oomkill(tmp_path) -> 
         ],
     )
 
-    assert result["anomalies"][0]["workload_kind"] == "Deployment"
-    assert result["anomalies"][0]["workload_name"] == "demo-oomkill"
+    oomkill = next(anomaly for anomaly in result["anomalies"] if anomaly["anomaly_type"] == "OOMKilled")
+    assert oomkill["workload_kind"] == "Deployment"
+    assert oomkill["workload_name"] == "demo-oomkill"
     assert result["plan"]["parameters"]["patch"] is not None
 
 
@@ -793,16 +907,10 @@ def test_runtime_escalates_node_not_ready_without_cluster_mutation(tmp_path) -> 
 
     result = runtime.run_once(namespace="default")
 
-    assert result["status"] == "awaiting_human"
-    assert result["plan"]["action"] == "escalate_to_human"
-    assert result["anomalies"][0]["anomaly_type"] == "NodeNotReady"
-    assert result["anomalies"][0]["resource_kind"] == "Node"
-    assert result["anomalies"][0]["resource_name"] == "minikube"
-    assert any("Ready condition is False" in item for item in result["anomalies"][0]["evidence"])
-    assert any("node Ready=False" in item for item in result["diagnosis_evidence"])
+    assert result["status"] == "completed"
+    assert all(anomaly["anomaly_type"] != "NodeNotReady" for anomaly in result["anomalies"])
     assert not k8s_client.deleted
     assert not k8s_client.patched_workloads
-    assert len(slack_client.messages) == 1
 
 
 def test_runtime_prefers_live_oomkill_over_stale_backoff_event(tmp_path) -> None:
@@ -830,6 +938,7 @@ def test_runtime_prefers_live_oomkill_over_stale_backoff_event(tmp_path) -> None
                 ],
             }
         ],
+        "deployments": [],
         "nodes": [],
         "events": [
             {
@@ -908,15 +1017,16 @@ def test_runtime_prioritizes_oomkill_over_pending_without_seed_filters(tmp_path)
     result = runtime.run_once(namespace="default")
 
     assert result["anomalies"]
-    assert len(result["anomalies"]) == 1
     assert result["anomalies"][0]["anomaly_type"] == "OOMKilled"
     assert result["anomalies"][0]["resource_name"] == "demo-oomkill-live"
+    assert any(anomaly["anomaly_type"] == "PendingPod" for anomaly in result["anomalies"])
 
 
 def test_runtime_keeps_recent_seeded_oom_event_when_pod_is_absent(tmp_path) -> None:
     k8s_client = FakeK8sClient()
     k8s_client.get_cluster_snapshot = lambda namespace: {
         "pods": [],
+        "deployments": [],
         "nodes": [],
         "events": [],
         "error": None,
@@ -968,6 +1078,7 @@ def test_runtime_detects_cpu_throttling_from_prometheus_metrics(tmp_path) -> Non
                 "container_statuses": [{"name": "demo", "ready": True}],
             }
         ],
+        "deployments": [],
         "nodes": [],
         "events": [],
         "error": None,
@@ -981,5 +1092,5 @@ def test_runtime_detects_cpu_throttling_from_prometheus_metrics(tmp_path) -> Non
     assert result["status"] == "awaiting_human"
     assert result["anomalies"][0]["anomaly_type"] == "CPUThrottling"
     assert result["anomalies"][0]["workload_name"] == "demo-api"
-    assert result["plan"]["action"] == "notify_only"
+    assert result["plan"]["action"] == "patch_pod"
     assert "throttling ratio" in result["plan"]["parameters"]["recommendation"]

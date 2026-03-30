@@ -64,6 +64,8 @@ spec:
               value: /app/runtime/data/langgraph-checkpoints.pkl
             - name: ALLOW_WORKLOAD_PATCHES
               value: "false"
+            - name: ENABLE_NODE_READ_OBSERVATION
+              value: "false"
             - name: SLACK_BOT_TOKEN
               valueFrom:
                 secretKeyRef:

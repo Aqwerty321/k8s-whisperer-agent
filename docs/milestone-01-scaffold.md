@@ -9,7 +9,7 @@ This milestone captures the first runnable baseline of K8sWhisperer after the in
 - Typed shared state in `backend/app/models/state.py`
 - Disk-backed LangGraph checkpoint persistence for HITL recovery
 - Append-only JSONL audit logging
-- Pod-focused Kubernetes integration wrappers, read-only node observation, and tightly scoped RBAC manifests
+- Pod-focused Kubernetes integration wrappers, optional read-only node observation, and tightly scoped RBAC manifests
 - Slack outbound messaging and inbound approval webhook verification/parsing
 - First working auto-remediation path for `CrashLoopBackOff`
 - First working HITL recommendation path for `OOMKilled`

@@ -28,6 +28,10 @@ def make_observe_node(deps: AgentDependencies):
     def observe_node(state: WhisperState) -> WhisperState:
         namespace = state.get("namespace") or deps.settings.k8s_namespace
         snapshot = deps.k8s_client.get_cluster_snapshot(namespace)
+        if deps.settings.enable_node_read_observation:
+            snapshot["nodes"] = deps.k8s_client.get_nodes()
+        else:
+            snapshot["nodes"] = []
         snapshot["prometheus"] = deps.prometheus_client.get_cpu_throttling(namespace=namespace)
         seeded_events = list(state.get("events", []))
         live_events = list(snapshot.get("events", []))
@@ -80,6 +84,9 @@ def make_diagnose_node(deps: AgentDependencies):
         if resource_kind == "Node":
             logs = ""
             pod_description = deps.k8s_client.describe_node(name=resource_name)
+        elif resource_kind == "Deployment":
+            logs = ""
+            pod_description = deps.k8s_client.describe_deployment(name=resource_name, namespace=namespace)
         else:
             logs = deps.k8s_client.get_pod_logs(name=resource_name, namespace=namespace)
             pod_description = deps.k8s_client.describe_pod(name=resource_name, namespace=namespace)
@@ -388,6 +395,14 @@ def _build_diagnosis_evidence(
         entry = f"node Ready=False ({reason}): {message}".strip()
         if entry not in evidence:
             evidence.append(entry[:240])
+    deployment_snapshot = pod_description.get("deployment") if isinstance(pod_description.get("deployment"), dict) else None
+    if deployment_snapshot:
+        stalled = deployment_snapshot.get("stalled_seconds")
+        updated_replicas = deployment_snapshot.get("updated_replicas")
+        replicas = deployment_snapshot.get("replicas")
+        entry = f"deployment updated_replicas={updated_replicas} replicas={replicas} stalled_seconds={stalled}"
+        if entry not in evidence:
+            evidence.append(entry[:240])
     for event in pod_description.get("events", []) if isinstance(pod_description.get("events"), list) else []:
         if not isinstance(event, dict):
             continue
@@ -438,7 +453,7 @@ def _prioritize_anomalies(anomalies: list[dict[str, object]]) -> list[dict[str, 
             -float(anomaly.get("confidence") or 0.0),
         ),
     )
-    return [sorted_anomalies[0]]
+    return sorted_anomalies
 
 
 def _has_workload_owner(anomaly: dict[str, object]) -> bool:
