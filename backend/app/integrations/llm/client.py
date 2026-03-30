@@ -35,6 +35,11 @@ class LLMClient:
             for pod in cluster_state.get("pods", [])
             if isinstance(pod, dict) and pod.get("name")
         }
+        deployments_by_name = {
+            str(deployment.get("name") or ""): deployment
+            for deployment in cluster_state.get("deployments", [])
+            if isinstance(deployment, dict) and deployment.get("name")
+        }
 
         for event in events:
             anomaly = self._event_to_anomaly(event, namespace=namespace)
@@ -94,6 +99,8 @@ class LLMClient:
             pod = pods_by_name.get(str(anomaly.get("resource_name") or ""))
             if pod is not None:
                 self._enrich_anomaly_with_pod_owner(anomaly, pod)
+                self._enrich_anomaly_with_container_details(anomaly, pod)
+            self._enrich_anomaly_with_workload_resources(anomaly, deployments_by_name)
             key = (anomaly["anomaly_type"], anomaly["resource_name"])
             if key in seen:
                 self._merge_evidence(anomalies, anomaly)
@@ -195,6 +202,7 @@ class LLMClient:
                 "parameters": {
                     "recommendation": self._cpu_throttling_recommendation(anomaly),
                     "observed_ratio": anomaly.get("metrics", {}).get("cpu_throttling_ratio"),
+                    "throttling_threshold": anomaly.get("metrics", {}).get("cpu_throttling_threshold"),
                     "suggested_cpu_factor": 1.5,
                     "target_workload_kind": anomaly.get("workload_kind", "Pod"),
                     "target_workload_name": anomaly.get("workload_name", resource_name),
@@ -354,7 +362,7 @@ class LLMClient:
                 namespace=namespace,
                 summary=message or "Image pull failed for this pod.",
                 confidence=0.74,
-                evidence=[reason or "ImagePullBackOff", message or "Image pull failed for the container image."],
+                evidence=self._image_pull_event_evidence(reason=reason, message=message),
             )
 
         if "evicted" in combined:
@@ -366,7 +374,7 @@ class LLMClient:
                 namespace=namespace,
                 summary=message or "Pod was evicted from its node.",
                 confidence=0.79,
-                evidence=[reason or "Evicted", message or "Pod was evicted by the kubelet."] ,
+                evidence=self._evicted_event_evidence(reason=reason, message=message),
             )
 
         return None
@@ -421,6 +429,11 @@ class LLMClient:
             )
 
         if any(reason == "ImagePullBackOff" for reason in waiting_reasons):
+            evidence = [
+                f"pod phase: {phase}",
+                "waiting reason: ImagePullBackOff",
+            ]
+            evidence.extend(self._image_pull_pod_evidence(pod))
             return self._build_anomaly(
                 anomaly_type="ImagePullBackOff",
                 severity="medium",
@@ -431,13 +444,15 @@ class LLMClient:
                 workload_name=str(pod.get("owner_name") or name),
                 summary=f"Pod {name} is in ImagePullBackOff.",
                 confidence=0.78,
-                evidence=[
-                    f"pod phase: {phase}",
-                    "waiting reason: ImagePullBackOff",
-                ],
+                evidence=evidence,
             )
 
         if str(pod.get("reason") or "") == "Evicted":
+            evidence = [
+                "pod status reason: Evicted",
+                f"pod phase: {phase}",
+            ]
+            evidence.extend(self._evicted_pod_evidence(pod))
             return self._build_anomaly(
                 anomaly_type="EvictedPod",
                 severity="low",
@@ -448,10 +463,7 @@ class LLMClient:
                 workload_name=str(pod.get("owner_name") or name),
                 summary=f"Pod {name} was evicted from its node.",
                 confidence=0.8,
-                evidence=[
-                    "pod status reason: Evicted",
-                    f"pod phase: {phase}",
-                ],
+                evidence=evidence,
             )
 
         return None
@@ -657,6 +669,56 @@ class LLMClient:
         if owner_name:
             anomaly["workload_name"] = owner_name
 
+    def _enrich_anomaly_with_container_details(self, anomaly: Anomaly, pod: dict[str, Any]) -> None:
+        statuses = pod.get("container_statuses") or []
+        if not statuses:
+            return
+        metrics = dict(anomaly.get("metrics") or {})
+        if metrics.get("container_name"):
+            anomaly["metrics"] = metrics
+            return
+        first_status = statuses[0]
+        if isinstance(first_status, dict) and first_status.get("name"):
+            metrics["container_name"] = first_status["name"]
+        anomaly["metrics"] = metrics
+
+    def _enrich_anomaly_with_workload_resources(
+        self,
+        anomaly: Anomaly,
+        deployments_by_name: dict[str, dict[str, Any]],
+    ) -> None:
+        workload_kind = str(anomaly.get("workload_kind") or "")
+        workload_name = str(anomaly.get("workload_name") or "")
+        if workload_kind != "Deployment" or not workload_name:
+            return
+        deployment = deployments_by_name.get(workload_name)
+        if not isinstance(deployment, dict):
+            return
+        containers = deployment.get("containers") or []
+        if not isinstance(containers, list) or not containers:
+            return
+
+        metrics = dict(anomaly.get("metrics") or {})
+        container_name = str(metrics.get("container_name") or "")
+        selected_container = None
+        if container_name:
+            for container in containers:
+                if str(container.get("name") or "") == container_name:
+                    selected_container = container
+                    break
+        if selected_container is None and len(containers) == 1:
+            selected_container = containers[0]
+        if selected_container is None:
+            return
+
+        selected_name = str(selected_container.get("name") or "")
+        cpu_limit = ((selected_container.get("resources") or {}).get("limits") or {}).get("cpu")
+        if selected_name:
+            metrics["container_name"] = selected_name
+        if cpu_limit:
+            metrics["current_cpu_limit"] = str(cpu_limit)
+        anomaly["metrics"] = metrics
+
     def _enrich_absent_seeded_oom_with_matching_workload(self, anomaly: Anomaly, pods_by_name: dict[str, dict[str, Any]]) -> None:
         if anomaly.get("anomaly_type") != "OOMKilled":
             return
@@ -706,7 +768,13 @@ class LLMClient:
     def _cpu_throttling_recommendation(self, anomaly: Anomaly) -> str:
         workload = self._workload_label(anomaly)
         ratio = ((anomaly.get("metrics") or {}).get("cpu_throttling_ratio") if isinstance(anomaly.get("metrics"), dict) else None)
+        current_limit = ((anomaly.get("metrics") or {}).get("current_cpu_limit") if isinstance(anomaly.get("metrics"), dict) else None)
         if isinstance(ratio, (float, int)):
+            if current_limit:
+                return (
+                    f"Increase the CPU limit for {workload} from {current_limit} by roughly 50% and verify "
+                    f"the throttling ratio drops below the threshold; Prometheus reports {float(ratio):.2f}."
+                )
             return f"Increase the CPU limit for {workload} by roughly 50% and verify the throttling ratio drops below the threshold; Prometheus reports {float(ratio):.2f}."
         return f"Review CPU requests and limits for {workload}; Prometheus indicates sustained CPU throttling."
 
@@ -716,15 +784,21 @@ class LLMClient:
         workload_kind = str(anomaly.get("workload_kind") or "Pod")
         if workload_kind != "Deployment":
             return None
+        metrics = anomaly.get("metrics") if isinstance(anomaly.get("metrics"), dict) else {}
+        container_name = str(metrics.get("container_name") or "")
+        current_limit = str(metrics.get("current_cpu_limit") or "")
+        suggested_limit = self._scale_cpu_limit(current_limit, factor=1.5)
+        if not container_name or not suggested_limit:
+            return None
         return {
             "spec": {
                 "template": {
                     "spec": {
                         "containers": [
                             {
-                                "name": "app",
+                                "name": container_name,
                                 "resources": {
-                                    "limits": {"cpu": "300m"},
+                                    "limits": {"cpu": suggested_limit},
                                 },
                             }
                         ]
@@ -733,9 +807,113 @@ class LLMClient:
             }
         }
 
+    def _scale_cpu_limit(self, value: str, *, factor: float) -> str | None:
+        raw = str(value or "").strip()
+        if not raw:
+            return None
+        if raw.endswith("m"):
+            number = raw[:-1]
+            try:
+                millicores = float(number)
+            except ValueError:
+                return None
+            scaled = max(int(round(millicores * factor)), int(millicores) + 1)
+            return f"{scaled}m"
+        try:
+            cores = float(raw)
+        except ValueError:
+            return None
+        scaled = max(round(cores * factor, 3), cores)
+        return f"{scaled:g}"
+
     def _image_pull_recommendation(self, anomaly: Anomaly) -> str:
         workload = self._workload_label(anomaly)
+        evidence_text = " ".join(str(item) for item in anomaly.get("evidence", []))
+        image = self._extract_image_reference(evidence_text)
+        if image:
+            return (
+                f"Inspect the failing image `{image}`, registry credentials, and pull policy for {workload}, "
+                "then alert a human operator with the exact image pull failure."
+            )
         return f"Inspect the image reference, registry credentials, and pull policy for {workload}, then alert a human operator with the failing image details."
+
+    def _image_pull_event_evidence(self, *, reason: str, message: str) -> list[str]:
+        evidence = [reason or "ImagePullBackOff"]
+        if message:
+            evidence.append(message)
+        image = self._extract_image_reference(message)
+        if image:
+            evidence.append(f"image reference: {image}")
+        return evidence
+
+    def _image_pull_pod_evidence(self, pod: dict[str, Any]) -> list[str]:
+        evidence: list[str] = []
+        for status in pod.get("container_statuses", []):
+            if not isinstance(status, dict):
+                continue
+            waiting_reason = str(status.get("waiting_reason") or "")
+            if waiting_reason != "ImagePullBackOff":
+                continue
+            container_name = str(status.get("name") or "unknown")
+            waiting_message = str(status.get("waiting_message") or "")
+            image = str(status.get("image") or "")
+            pull_policy = str(status.get("image_pull_policy") or "")
+            evidence.append(f"container: {container_name}")
+            if image:
+                evidence.append(f"image reference: {image}")
+            if pull_policy:
+                evidence.append(f"image pull policy: {pull_policy}")
+            if waiting_message:
+                evidence.append(f"image pull error: {waiting_message}")
+            break
+        return evidence
+
+    def _evicted_event_evidence(self, *, reason: str, message: str) -> list[str]:
+        evidence = [reason or "Evicted"]
+        if message:
+            evidence.append(message)
+        pressure = self._extract_node_pressure(message)
+        if pressure:
+            evidence.append(f"node pressure: {pressure}")
+        return evidence
+
+    def _evicted_pod_evidence(self, pod: dict[str, Any]) -> list[str]:
+        evidence: list[str] = []
+        node_name = str(pod.get("node_name") or "")
+        if node_name:
+            evidence.append(f"node: {node_name}")
+        message = str(pod.get("message") or "")
+        if message:
+            evidence.append(f"eviction message: {message}")
+        pressure = self._extract_node_pressure(message)
+        if pressure:
+            evidence.append(f"node pressure: {pressure}")
+        return evidence
+
+    def _extract_image_reference(self, text: str) -> str | None:
+        marker = 'image "'
+        lower = text.lower()
+        start = lower.find(marker)
+        if start == -1:
+            return None
+        start += len(marker)
+        end = text.find('"', start)
+        if end == -1:
+            return None
+        image = text[start:end].strip()
+        return image or None
+
+    def _extract_node_pressure(self, text: str) -> str | None:
+        lower = text.lower()
+        if "memorypressure" in lower or "memory pressure" in lower:
+            return "MemoryPressure"
+        if "diskpressure" in lower or "disk pressure" in lower:
+            return "DiskPressure"
+        if "pidpressure" in lower or "pid pressure" in lower:
+            return "PIDPressure"
+        if "ephemeral-storage" in lower:
+            return "EphemeralStoragePressure"
+        return None
 
     def _oomkill_recommendation(self, anomaly: Anomaly) -> str:
         workload = self._workload_label(anomaly)

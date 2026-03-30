@@ -275,6 +275,26 @@ def make_execute_node(deps: AgentDependencies):
                             "result": result,
                             "error": verification.get("message"),
                         }
+                    if _requires_cpu_throttling_verification(state):
+                        workload_pods = deps.k8s_client.get_workload_pods(
+                            kind=workload_kind,
+                            name=workload_name,
+                            namespace=namespace,
+                        )
+                        pod_names = [str(pod.get("name") or "") for pod in workload_pods if pod.get("name")]
+                        throttle_threshold = plan.get("parameters", {}).get("throttling_threshold")
+                        throttle_verification = deps.prometheus_client.verify_cpu_throttling_recovery(
+                            namespace=namespace,
+                            pod_names=pod_names,
+                            threshold=float(throttle_threshold) if throttle_threshold is not None else None,
+                            timeout_seconds=max(deps.settings.verify_timeout_seconds, 60),
+                        )
+                        result = f"{result} Throttling: {throttle_verification.get('message')}"
+                        if not throttle_verification.get("recovered"):
+                            return {
+                                "result": result,
+                                "error": throttle_verification.get("message"),
+                            }
                     return {
                         "result": result,
                         "error": None,
@@ -385,9 +405,10 @@ def _build_diagnosis_evidence(
     pod_description: dict[str, object],
 ) -> list[str]:
     evidence = list(anomaly.get("evidence", [])) if isinstance(anomaly.get("evidence"), list) else []
+    log_entry = None
     if logs and "Unable to fetch logs" not in logs:
         first_line = logs.strip().splitlines()[0] if logs.strip() else "logs collected"
-        evidence.append(f"logs: {first_line[:200]}")
+        log_entry = f"logs: {first_line[:200]}"
     node_snapshot = pod_description.get("node") if isinstance(pod_description.get("node"), dict) else None
     if node_snapshot:
         reason = node_snapshot.get("ready_reason") or "unknown"
@@ -403,6 +424,36 @@ def _build_diagnosis_evidence(
         entry = f"deployment updated_replicas={updated_replicas} replicas={replicas} stalled_seconds={stalled}"
         if entry not in evidence:
             evidence.append(entry[:240])
+    pod_snapshot = pod_description.get("pod") if isinstance(pod_description.get("pod"), dict) else None
+    if pod_snapshot:
+        node_name = pod_snapshot.get("node_name")
+        pod_message = pod_snapshot.get("message")
+        if node_name:
+            entry = f"pod scheduled on node: {node_name}"
+            if entry not in evidence:
+                evidence.append(entry[:240])
+        if pod_message:
+            entry = f"pod message: {pod_message}"
+            if entry not in evidence:
+                evidence.append(entry[:240])
+        for status in pod_snapshot.get("container_statuses", []) if isinstance(pod_snapshot.get("container_statuses"), list) else []:
+            if not isinstance(status, dict):
+                continue
+            waiting_message = status.get("waiting_message")
+            image = status.get("image")
+            pull_policy = status.get("image_pull_policy")
+            if image:
+                entry = f"container {status.get('name', 'unknown')} image: {image}"
+                if entry not in evidence:
+                    evidence.append(entry[:240])
+            if pull_policy:
+                entry = f"container {status.get('name', 'unknown')} pull policy: {pull_policy}"
+                if entry not in evidence:
+                    evidence.append(entry[:240])
+            if waiting_message:
+                entry = f"container {status.get('name', 'unknown')} wait message: {waiting_message}"
+                if entry not in evidence:
+                    evidence.append(entry[:240])
     for event in pod_description.get("events", []) if isinstance(pod_description.get("events"), list) else []:
         if not isinstance(event, dict):
             continue
@@ -411,6 +462,8 @@ def _build_diagnosis_evidence(
         entry = f"event {reason}: {message}".strip()
         if entry not in evidence:
             evidence.append(entry[:240])
+    if log_entry and log_entry not in evidence and len(evidence) < 10:
+        evidence.append(log_entry)
     return evidence[:10]
 
 
@@ -430,6 +483,11 @@ def _timeline_for_state(state: WhisperState) -> list[str]:
         timeline.append("auto-approved by safety gate")
     timeline.append(f"execution result: {state.get('result', 'pending')}")
     return timeline
+
+
+def _requires_cpu_throttling_verification(state: WhisperState) -> bool:
+    anomaly = latest_anomaly(state)
+    return bool(anomaly and anomaly.get("anomaly_type") == "CPUThrottling")
 
 
 def _prioritize_anomalies(anomalies: list[dict[str, object]]) -> list[dict[str, object]]:

@@ -319,14 +319,42 @@ class FakePrometheusClient(PrometheusClient):
     def __init__(self) -> None:
         super().__init__(base_url=None)
         self.metrics: list[dict] = []
+        self.recovery_result = {
+            "ok": True,
+            "recovered": True,
+            "message": "CPU throttling ratios dropped below threshold.",
+            "metrics": [],
+        }
 
-    def get_cpu_throttling(self, *, namespace: str):
+    def get_cpu_throttling(self, *, namespace: str, lookback: str = PrometheusClient.CPU_THROTTLING_LOOKBACK):
         return {
             "status": "success",
             "error": None,
             "metrics": [
                 {**metric, "namespace": metric.get("namespace") or namespace}
                 for metric in self.metrics
+            ],
+        }
+
+    def verify_cpu_throttling_recovery(
+        self,
+        *,
+        namespace: str,
+        pod_names: list[str],
+        threshold: float | None = None,
+        timeout_seconds: int = 60,
+        poll_interval_seconds: float = 5.0,
+    ):
+        return {
+            **self.recovery_result,
+            "metrics": [
+                {
+                    "namespace": namespace,
+                    "pod": pod_name,
+                    "ratio": 0.21,
+                    "threshold": threshold if threshold is not None else self.CPU_THROTTLING_THRESHOLD,
+                }
+                for pod_name in pod_names
             ],
         }
 
@@ -899,6 +927,139 @@ def test_runtime_records_structured_diagnosis_evidence(tmp_path) -> None:
     assert any(item.startswith("logs:") or item.startswith("event ") for item in result["diagnosis_evidence"])
 
 
+def test_runtime_surfaces_image_pull_details_in_recommendation_and_evidence(tmp_path) -> None:
+    k8s_client = FakeK8sClient()
+    k8s_client.get_cluster_snapshot = lambda namespace: {
+        "pods": [
+            {
+                "name": "demo-imagepull",
+                "namespace": namespace,
+                "phase": "Pending",
+                "reason": None,
+                "owner_kind": "Deployment",
+                "owner_name": "demo-imagepull",
+                "restart_count": 0,
+                "waiting_reasons": ["ImagePullBackOff"],
+                "container_statuses": [
+                    {
+                        "name": "api",
+                        "restart_count": 0,
+                        "waiting_reason": "ImagePullBackOff",
+                        "waiting_message": 'Failed to pull image "ghcr.io/acme/private-api:v2": unauthorized',
+                        "terminated_reason": None,
+                        "ready": False,
+                        "image": "ghcr.io/acme/private-api:v2",
+                        "image_pull_policy": "IfNotPresent",
+                    }
+                ],
+            }
+        ],
+        "deployments": [],
+        "nodes": [],
+        "events": [],
+        "error": None,
+    }
+    k8s_client.describe_pod = lambda name, namespace: {
+        "name": name,
+        "namespace": namespace,
+        "pod": {
+            "name": name,
+            "namespace": namespace,
+            "phase": "Pending",
+            "reason": None,
+            "message": None,
+            "node_name": None,
+            "container_statuses": [
+                {
+                    "name": "api",
+                    "waiting_reason": "ImagePullBackOff",
+                    "waiting_message": 'Failed to pull image "ghcr.io/acme/private-api:v2": unauthorized',
+                    "image": "ghcr.io/acme/private-api:v2",
+                    "image_pull_policy": "IfNotPresent",
+                    "ready": False,
+                }
+            ],
+        },
+        "events": [],
+        "error": None,
+    }
+    runtime = build_runtime(tmp_path=tmp_path, k8s_client=k8s_client)
+
+    result = runtime.run_once(namespace="default")
+
+    assert result["status"] == "awaiting_human"
+    assert result["anomalies"][0]["anomaly_type"] == "ImagePullBackOff"
+    assert any("image reference: ghcr.io/acme/private-api:v2" in item for item in result["anomalies"][0]["evidence"])
+    assert "ghcr.io/acme/private-api:v2" in result["plan"]["parameters"]["recommendation"]
+    assert any("pull policy" in item for item in result["diagnosis_evidence"])
+
+
+def test_runtime_surfaces_eviction_pressure_in_diagnosis_evidence(tmp_path) -> None:
+    k8s_client = FakeK8sClient()
+    k8s_client.get_cluster_snapshot = lambda namespace: {
+        "pods": [
+            {
+                "name": "demo-evicted",
+                "namespace": namespace,
+                "phase": "Failed",
+                "reason": "Evicted",
+                "message": "The node had condition: [DiskPressure].",
+                "node_name": "minikube",
+                "owner_kind": "Deployment",
+                "owner_name": "demo-evicted",
+                "restart_count": 0,
+                "waiting_reasons": [],
+                "container_statuses": [],
+            }
+        ],
+        "deployments": [],
+        "nodes": [],
+        "events": [
+            {
+                "type": "Warning",
+                "reason": "Evicted",
+                "message": "The node was low on resource: ephemeral-storage. Container api was using 120Ki, which exceeds its request of 0.",
+                "namespace": namespace,
+                "resource_name": "demo-evicted",
+                "resource_kind": "Pod",
+                "count": 1,
+                "last_timestamp": "2026-03-29T00:00:00Z",
+            }
+        ],
+        "error": None,
+    }
+    k8s_client.describe_pod = lambda name, namespace: {
+        "name": name,
+        "namespace": namespace,
+        "pod": {
+            "name": name,
+            "namespace": namespace,
+            "phase": "Failed",
+            "reason": "Evicted",
+            "message": "The node had condition: [DiskPressure].",
+            "node_name": "minikube",
+            "container_statuses": [],
+        },
+        "events": [
+            {
+                "reason": "Evicted",
+                "message": "The node was low on resource: ephemeral-storage. Container api was using 120Ki, which exceeds its request of 0.",
+            }
+        ],
+        "error": None,
+    }
+    runtime = build_runtime(tmp_path=tmp_path, k8s_client=k8s_client)
+
+    result = runtime.run_once(namespace="default")
+
+    assert result["status"] == "completed"
+    assert result["anomalies"][0]["anomaly_type"] == "EvictedPod"
+    assert result["plan"]["action"] == "delete_pod"
+    assert any("node pressure: DiskPressure" in item or "ephemeral-storage" in item for item in result["anomalies"][0]["evidence"])
+    assert any("pod scheduled on node: minikube" in item for item in result["diagnosis_evidence"])
+    assert any("pod message:" in item or "event Evicted:" in item for item in result["diagnosis_evidence"])
+
+
 def test_runtime_escalates_node_not_ready_without_cluster_mutation(tmp_path) -> None:
     k8s_client = FakeK8sClient()
     k8s_client.mode = "node_not_ready"
@@ -1078,7 +1239,26 @@ def test_runtime_detects_cpu_throttling_from_prometheus_metrics(tmp_path) -> Non
                 "container_statuses": [{"name": "demo", "ready": True}],
             }
         ],
-        "deployments": [],
+        "deployments": [
+            {
+                "name": "demo-api",
+                "namespace": namespace,
+                "replicas": 1,
+                "updated_replicas": 1,
+                "ready_replicas": 1,
+                "available_replicas": 1,
+                "stalled_seconds": None,
+                "containers": [
+                    {
+                        "name": "demo",
+                        "resources": {
+                            "limits": {"cpu": "200m"},
+                            "requests": {"cpu": "100m"},
+                        },
+                    }
+                ],
+            }
+        ],
         "nodes": [],
         "events": [],
         "error": None,
@@ -1094,3 +1274,82 @@ def test_runtime_detects_cpu_throttling_from_prometheus_metrics(tmp_path) -> Non
     assert result["anomalies"][0]["workload_name"] == "demo-api"
     assert result["plan"]["action"] == "patch_pod"
     assert "throttling ratio" in result["plan"]["parameters"]["recommendation"]
+    assert result["plan"]["parameters"]["throttling_threshold"] == 0.5
+
+
+def test_runtime_executes_real_workload_patch_for_cpu_throttling(tmp_path) -> None:
+    settings = build_settings(tmp_path).model_copy(update={"allow_workload_patches": True})
+    k8s_client = FakeK8sClient()
+    k8s_client.workload_pods = [
+        {
+            "name": "demo-api-456",
+            "namespace": "default",
+            "phase": "Running",
+            "owner_kind": "Deployment",
+            "owner_name": "demo-api",
+            "container_statuses": [{"ready": True}],
+        }
+    ]
+    k8s_client.get_cluster_snapshot = lambda namespace: {
+        "pods": [
+            {
+                "name": "demo-api-123",
+                "namespace": namespace,
+                "phase": "Running",
+                "reason": None,
+                "owner_kind": "Deployment",
+                "owner_name": "demo-api",
+                "restart_count": 0,
+                "waiting_reasons": [],
+                "container_statuses": [{"name": "demo", "ready": True}],
+            }
+        ],
+        "deployments": [
+            {
+                "name": "demo-api",
+                "namespace": namespace,
+                "replicas": 1,
+                "updated_replicas": 1,
+                "ready_replicas": 1,
+                "available_replicas": 1,
+                "stalled_seconds": None,
+                "containers": [
+                    {
+                        "name": "demo",
+                        "resources": {
+                            "limits": {"cpu": "200m"},
+                            "requests": {"cpu": "100m"},
+                        },
+                    }
+                ],
+            }
+        ],
+        "nodes": [],
+        "events": [],
+        "error": None,
+    }
+    prometheus_client = FakePrometheusClient()
+    prometheus_client.metrics = [{"pod": "demo-api-123", "ratio": 0.73, "threshold": 0.5}]
+    slack_client = RecordingSlackClient()
+    runtime = AgentRuntime(
+        settings=settings,
+        audit_logger=AuditLogger(settings.audit_log_path),
+        k8s_client=k8s_client,
+        llm_client=LLMClient(api_key="", allow_workload_patches=True),
+        prometheus_client=prometheus_client,
+        slack_client=slack_client,
+    )
+
+    pending = runtime.run_once(namespace="default")
+    completed = runtime.resume_incident(incident_id=pending["incident_id"], approved=True)
+
+    assert completed["status"] == "completed"
+    assert k8s_client.patched_workloads
+    kind, namespace, name, patch = k8s_client.patched_workloads[0]
+    assert kind == "Deployment"
+    assert namespace == "default"
+    assert name == "demo-api"
+    assert patch["spec"]["template"]["spec"]["containers"][0]["name"] == "demo"
+    assert patch["spec"]["template"]["spec"]["containers"][0]["resources"]["limits"]["cpu"] == "300m"
+    assert "rollout completed successfully" in completed["result"]
+    assert "CPU throttling ratios dropped below threshold" in completed["result"]

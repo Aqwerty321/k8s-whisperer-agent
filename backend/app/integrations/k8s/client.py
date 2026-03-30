@@ -485,6 +485,13 @@ class K8sClient:
 
     def _serialize_pod(self, pod: Any) -> dict[str, Any]:
         statuses = getattr(getattr(pod, "status", None), "container_statuses", None) or []
+        spec = getattr(pod, "spec", None)
+        spec_containers = getattr(spec, "containers", None) or []
+        spec_containers_by_name = {
+            getattr(container, "name", None): container
+            for container in spec_containers
+            if getattr(container, "name", None)
+        }
         owners = getattr(getattr(pod, "metadata", None), "owner_references", None) or []
         container_statuses = []
         total_restarts = 0
@@ -498,16 +505,21 @@ class K8sClient:
         for status in statuses:
             restart_count = getattr(status, "restart_count", 0) or 0
             total_restarts += restart_count
+            container_name = getattr(status, "name", "unknown")
+            spec_container = spec_containers_by_name.get(container_name)
             waiting = getattr(getattr(status, "state", None), "waiting", None)
             current_terminated = getattr(getattr(status, "state", None), "terminated", None)
             terminated = current_terminated or getattr(getattr(status, "last_state", None), "terminated", None)
             container_statuses.append(
                 {
-                    "name": getattr(status, "name", "unknown"),
+                    "name": container_name,
                     "restart_count": restart_count,
                     "waiting_reason": getattr(waiting, "reason", None),
+                    "waiting_message": getattr(waiting, "message", None),
                     "terminated_reason": getattr(terminated, "reason", None),
                     "ready": getattr(status, "ready", False),
+                    "image": getattr(status, "image", None) or getattr(spec_container, "image", None),
+                    "image_pull_policy": getattr(spec_container, "image_pull_policy", None),
                 }
             )
             if getattr(waiting, "reason", None):
@@ -518,8 +530,10 @@ class K8sClient:
             "namespace": getattr(getattr(pod, "metadata", None), "namespace", "default"),
             "phase": getattr(getattr(pod, "status", None), "phase", "Unknown"),
             "reason": getattr(getattr(pod, "status", None), "reason", None),
+            "message": getattr(getattr(pod, "status", None), "message", None),
             "created_at": self._serialize_datetime(getattr(getattr(pod, "metadata", None), "creation_timestamp", None)),
             "age_seconds": self._age_seconds(getattr(getattr(pod, "metadata", None), "creation_timestamp", None)),
+            "node_name": getattr(spec, "node_name", None),
             "owner_kind": owner_kind,
             "owner_name": owner_name,
             "restart_count": total_restarts,
@@ -553,6 +567,8 @@ class K8sClient:
         metadata = getattr(deployment, "metadata", None)
         spec = getattr(deployment, "spec", None)
         status = getattr(deployment, "status", None)
+        template_spec = getattr(getattr(spec, "template", None), "spec", None)
+        containers = getattr(template_spec, "containers", None) or []
         replicas = int(getattr(spec, "replicas", 1) or 1)
         updated_replicas = int(getattr(status, "updated_replicas", 0) or 0)
         ready_replicas = int(getattr(status, "ready_replicas", 0) or 0)
@@ -570,6 +586,7 @@ class K8sClient:
             "ready_replicas": ready_replicas,
             "available_replicas": available_replicas,
             "unavailable_replicas": unavailable_replicas,
+            "containers": [self._serialize_container_spec(container) for container in containers],
             "stalled_seconds": self._deployment_stalled_seconds(
                 created_at=getattr(metadata, "creation_timestamp", None),
                 replicas=replicas,
@@ -609,6 +626,18 @@ class K8sClient:
             "resource_kind": getattr(involved_object, "kind", None),
             "count": getattr(event, "count", None),
             "last_timestamp": str(getattr(event, "last_timestamp", "")),
+        }
+
+    def _serialize_container_spec(self, container: Any) -> dict[str, Any]:
+        resources = getattr(container, "resources", None)
+        requests = getattr(resources, "requests", None) or {}
+        limits = getattr(resources, "limits", None) or {}
+        return {
+            "name": getattr(container, "name", "unknown"),
+            "resources": {
+                "requests": dict(requests),
+                "limits": dict(limits),
+            },
         }
 
     def _serialize_datetime(self, value: Any) -> str | None:
