@@ -165,18 +165,12 @@ This deploys `Deployment/k8s-whisperer` and `Service/k8s-whisperer` on port `801
 If you need live Slack, Gemini, or Stellar values in-cluster, create the shared secret first:
 
 ```bash
-kubectl create secret generic k8s-whisperer-secrets \
-  -n default \
-  --from-literal=slack_bot_token="$SLACK_BOT_TOKEN" \
-  --from-literal=slack_signing_secret="$SLACK_SIGNING_SECRET" \
-  --from-literal=gemini_api_key="$GEMINI_API_KEY" \
-  --from-literal=stellar_rpc_url="$STELLAR_RPC_URL" \
-  --from-literal=stellar_secret_key="$STELLAR_SECRET_KEY" \
-  --from-literal=stellar_contract_id="$STELLAR_CONTRACT_ID" \
-  --dry-run=client -o yaml | kubectl apply -f -
+bash scripts/sync_cluster_secrets.sh
 ```
 
 You can also start from `k8s/backend-secret.template.yaml` and replace placeholder values before applying it.
+
+The sync script preserves existing non-empty cluster values when your local `.env` leaves a field blank, which prevents accidental loss of working Slack or Soroban configuration.
 
 ### Bridge the in-cluster service to a local callback port
 ```bash

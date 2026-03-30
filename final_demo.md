@@ -48,6 +48,15 @@ What to do on screen:
 Run:
 
 ```bash
+bash scripts/sync_cluster_secrets.sh
+```
+
+Say:
+"This safely syncs live Slack, Gemini, and Soroban values into the cluster without wiping working settings when a local env entry is blank."
+
+Run:
+
+```bash
 make demo-ready
 ```
 
