@@ -27,7 +27,13 @@ class AgentDependencies:
 def make_observe_node(deps: AgentDependencies):
     def observe_node(state: WhisperState) -> WhisperState:
         namespace = state.get("namespace") or deps.settings.k8s_namespace
-        snapshot = deps.k8s_client.get_cluster_snapshot(namespace)
+        observed_namespaces = _observed_namespaces(state, deps.settings)
+        if deps.settings.observe_all_namespaces or len(observed_namespaces) > 1:
+            snapshot = deps.k8s_client.get_cluster_snapshot_multi(
+                None if deps.settings.observe_all_namespaces else observed_namespaces
+            )
+        else:
+            snapshot = deps.k8s_client.get_cluster_snapshot(namespace)
         if deps.settings.enable_node_read_observation:
             snapshot["nodes"] = deps.k8s_client.get_nodes()
         else:
@@ -38,6 +44,7 @@ def make_observe_node(deps: AgentDependencies):
         combined_events = seeded_events + [event for event in live_events if event not in seeded_events]
         return {
             "namespace": namespace,
+            "observed_namespaces": observed_namespaces,
             "cluster_state": snapshot,
             "events": combined_events,
             "approved": state.get("approved"),
@@ -547,6 +554,16 @@ def _timeline_for_state(state: WhisperState) -> list[str]:
         timeline.append("auto-approved by safety gate")
     timeline.append(f"execution result: {state.get('result', 'pending')}")
     return timeline
+
+
+def _observed_namespaces(state: WhisperState, settings: Settings) -> list[str]:
+    if settings.observe_all_namespaces:
+        return ["*"]
+    configured = [namespace for namespace in settings.observed_namespaces if namespace]
+    if configured:
+        return configured
+    namespace = str(state.get("namespace") or settings.k8s_namespace or "default")
+    return [namespace]
 
 
 def _requires_cpu_throttling_verification(state: WhisperState) -> bool:

@@ -27,6 +27,8 @@ class Settings(BaseSettings):
 
     kubeconfig: str | None = None
     k8s_namespace: str = "default"
+    observe_all_namespaces: bool = False
+    observed_namespaces: list[str] = Field(default_factory=list)
 
     poll_interval_seconds: int = 30
     auto_approve_threshold: float = Field(default=0.8, ge=0.0, le=1.0)
@@ -49,6 +51,17 @@ class Settings(BaseSettings):
     @classmethod
     def strip_public_base_url(cls, value: str) -> str:
         return value.rstrip("/")
+
+    @field_validator("observed_namespaces", mode="before")
+    @classmethod
+    def normalize_observed_namespaces(cls, value: object) -> list[str]:
+        if value in (None, ""):
+            return []
+        if isinstance(value, str):
+            return [item.strip() for item in value.split(",") if item.strip()]
+        if isinstance(value, (list, tuple, set)):
+            return [str(item).strip() for item in value if str(item).strip()]
+        return []
 
 
 @lru_cache(maxsize=1)

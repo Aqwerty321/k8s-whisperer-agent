@@ -49,6 +49,32 @@ class K8sClient:
             "error": self._load_error,
         }
 
+    def get_cluster_snapshot_multi(self, namespaces: list[str] | None = None) -> dict[str, Any]:
+        self._ensure_client()
+        if namespaces:
+            unique_namespaces = [str(namespace).strip() for namespace in namespaces if str(namespace).strip()]
+            pods: list[dict[str, Any]] = []
+            deployments: list[dict[str, Any]] = []
+            events: list[dict[str, Any]] = []
+            for namespace in unique_namespaces:
+                pods.extend(self.get_pods(namespace))
+                deployments.extend(self.get_deployments(namespace))
+                events.extend(self.get_events(namespace))
+            return {
+                "pods": pods,
+                "deployments": deployments,
+                "events": events,
+                "error": self._load_error,
+                "namespaces": unique_namespaces,
+            }
+        return {
+            "pods": self.get_pods_all_namespaces(),
+            "deployments": self.get_deployments_all_namespaces(),
+            "events": self.get_events_all_namespaces(),
+            "error": self._load_error,
+            "namespaces": ["*"],
+        }
+
     def get_pods(self, namespace: str) -> list[dict[str, Any]]:
         self._ensure_client()
         if self._core_v1 is None:
@@ -56,6 +82,18 @@ class K8sClient:
 
         try:
             pods = self._core_v1.list_namespaced_pod(namespace=namespace).items
+            return [self._serialize_pod(pod) for pod in pods]
+        except Exception as exc:
+            self._load_error = str(exc)
+            return []
+
+    def get_pods_all_namespaces(self) -> list[dict[str, Any]]:
+        self._ensure_client()
+        if self._core_v1 is None:
+            return []
+
+        try:
+            pods = self._core_v1.list_pod_for_all_namespaces().items
             return [self._serialize_pod(pod) for pod in pods]
         except Exception as exc:
             self._load_error = str(exc)
@@ -85,6 +123,18 @@ class K8sClient:
             self._load_error = str(exc)
             return []
 
+    def get_events_all_namespaces(self) -> list[dict[str, Any]]:
+        self._ensure_client()
+        if self._core_v1 is None:
+            return []
+
+        try:
+            events = self._core_v1.list_event_for_all_namespaces().items
+            return [self._serialize_event(event) for event in events]
+        except Exception as exc:
+            self._load_error = str(exc)
+            return []
+
     def get_nodes(self) -> list[dict[str, Any]]:
         self._ensure_client()
         if self._core_v1 is None:
@@ -104,6 +154,18 @@ class K8sClient:
 
         try:
             deployments = self._apps_v1.list_namespaced_deployment(namespace=namespace).items
+            return [self._serialize_deployment(deployment) for deployment in deployments]
+        except Exception as exc:
+            self._load_error = str(exc)
+            return []
+
+    def get_deployments_all_namespaces(self) -> list[dict[str, Any]]:
+        self._ensure_client()
+        if self._apps_v1 is None:
+            return []
+
+        try:
+            deployments = self._apps_v1.list_deployment_for_all_namespaces().items
             return [self._serialize_deployment(deployment) for deployment in deployments]
         except Exception as exc:
             self._load_error = str(exc)

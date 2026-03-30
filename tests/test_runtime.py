@@ -17,6 +17,7 @@ class FakeK8sClient(K8sClient):
         self.patched_workloads: list[tuple[str, str, str, dict]] = []
         self.mode = "crashloop"
         self.workload_pods: list[dict] = []
+        self.multi_snapshot: dict | None = None
 
     def get_cluster_snapshot(self, namespace: str):
         if self.mode == "oomkill":
@@ -114,12 +115,17 @@ class FakeK8sClient(K8sClient):
                         }
                     ],
                 }
-                ],
-                "deployments": [],
-                "nodes": [],
-                "events": [],
-                "error": None,
-            }
+            ],
+            "deployments": [],
+            "nodes": [],
+            "events": [],
+            "error": None,
+        }
+
+    def get_cluster_snapshot_multi(self, namespaces: list[str] | None = None):
+        if self.multi_snapshot is not None:
+            return self.multi_snapshot
+        return self.get_cluster_snapshot((namespaces or ["default"])[0])
 
     def get_pod_logs(self, name: str, namespace: str, tail_lines: int = 200) -> str:
         if self.mode == "pending":
@@ -561,6 +567,98 @@ def test_runtime_does_not_observe_nodes_by_default(tmp_path) -> None:
 
     assert result["status"] == "completed"
     assert all(anomaly["anomaly_type"] != "NodeNotReady" for anomaly in result["anomalies"])
+
+
+def test_runtime_can_observe_multiple_configured_namespaces(tmp_path) -> None:
+    settings = build_settings(tmp_path).model_copy(update={"observed_namespaces": ["default", "payments"]})
+    k8s_client = FakeK8sClient()
+    k8s_client.multi_snapshot = {
+        "pods": [
+            {
+                "name": "payments-crashloop",
+                "namespace": "payments",
+                "phase": "Running",
+                "reason": None,
+                "restart_count": 7,
+                "waiting_reasons": ["CrashLoopBackOff"],
+                "container_statuses": [
+                    {
+                        "name": "api",
+                        "restart_count": 7,
+                        "waiting_reason": "CrashLoopBackOff",
+                        "terminated_reason": None,
+                        "ready": False,
+                    }
+                ],
+            }
+        ],
+        "deployments": [],
+        "events": [],
+        "error": None,
+        "namespaces": ["default", "payments"],
+    }
+    runtime = AgentRuntime(
+        settings=settings,
+        audit_logger=AuditLogger(settings.audit_log_path),
+        k8s_client=k8s_client,
+        llm_client=LLMClient(api_key=""),
+        prometheus_client=FakePrometheusClient(),
+        slack_client=RecordingSlackClient(),
+    )
+
+    result = runtime.run_once(namespace="default")
+
+    assert result["anomalies"]
+    assert result["anomalies"][0]["resource_name"] == "payments-crashloop"
+    assert result["anomalies"][0]["namespace"] == "payments"
+    assert result["observed_namespaces"] == ["default", "payments"]
+
+
+def test_runtime_can_observe_all_namespaces_when_enabled(tmp_path) -> None:
+    settings = build_settings(tmp_path).model_copy(update={"observe_all_namespaces": True})
+    k8s_client = FakeK8sClient()
+    k8s_client.multi_snapshot = {
+        "pods": [
+            {
+                "name": "team-b-oomkill",
+                "namespace": "team-b",
+                "phase": "Running",
+                "reason": None,
+                "owner_kind": "Deployment",
+                "owner_name": "team-b-oomkill",
+                "restart_count": 1,
+                "waiting_reasons": [],
+                "container_statuses": [
+                    {
+                        "name": "app",
+                        "restart_count": 1,
+                        "waiting_reason": None,
+                        "terminated_reason": "OOMKilled",
+                        "ready": False,
+                    }
+                ],
+            }
+        ],
+        "deployments": [],
+        "events": [],
+        "error": None,
+        "namespaces": ["*"],
+    }
+    runtime = AgentRuntime(
+        settings=settings,
+        audit_logger=AuditLogger(settings.audit_log_path),
+        k8s_client=k8s_client,
+        llm_client=LLMClient(api_key=""),
+        prometheus_client=FakePrometheusClient(),
+        slack_client=RecordingSlackClient(),
+    )
+
+    result = runtime.run_once(namespace="default")
+
+    assert result["anomalies"]
+    assert result["anomalies"][0]["resource_name"] == "team-b-oomkill"
+    assert result["anomalies"][0]["namespace"] == "team-b"
+    assert result["observed_namespaces"] == ["*"]
 
 
 def test_runtime_detects_node_not_ready_when_node_observation_is_enabled(tmp_path) -> None:

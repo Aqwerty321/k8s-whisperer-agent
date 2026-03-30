@@ -72,6 +72,7 @@ class WhisperState(TypedDict, total=False):
     created_at: str
     updated_at: str
     namespace: str
+    observed_namespaces: list[str]
     cluster_state: dict[str, Any]
     events: list[dict[str, Any]]
     seeded_resource_names: list[str]
