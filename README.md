@@ -144,6 +144,20 @@ kubectl create secret generic k8s-whisperer-secrets \
 
 Or start from the checked-in template at `k8s/backend-secret.template.yaml` and replace the placeholder values before applying it.
 
+If you want live Soroban attestation in-cluster, add the Stellar values to the same secret:
+
+```bash
+kubectl create secret generic k8s-whisperer-secrets \
+  -n default \
+  --from-literal=slack_bot_token="$SLACK_BOT_TOKEN" \
+  --from-literal=slack_signing_secret="$SLACK_SIGNING_SECRET" \
+  --from-literal=gemini_api_key="$GEMINI_API_KEY" \
+  --from-literal=stellar_rpc_url="https://soroban-testnet.stellar.org" \
+  --from-literal=stellar_secret_key="$STELLAR_SECRET_KEY" \
+  --from-literal=stellar_contract_id="$STELLAR_CONTRACT_ID" \
+  --dry-run=client -o yaml | kubectl apply -f -
+```
+
 ### Route the public callback URL into the in-cluster backend
 ```bash
 make public-bridge
@@ -203,6 +217,7 @@ bash scripts/export_incident_report.sh
 - `POST /api/poller`
 - `POST /api/slack/actions`
 - `POST /api/attest`
+- `POST /api/attest/verify`
 
 ## Demo Flow
 1. Start the FastAPI app.
@@ -259,23 +274,95 @@ If you control a domain and move DNS to Cloudflare, you can expose the app on a 
 The bonus path is intentionally decoupled from live remediation:
 
 1. Resolve incident locally.
-2. Hash the incident record.
-3. Anchor the hash via the backend attestation path.
-4. Store transaction metadata back into the local record.
-5. Verify proof through the isolated frontend.
+2. Build a stable attestation record from runtime or audit state.
+3. Hash the canonical incident record.
+4. Anchor the hash on Soroban via the backend attestation path.
+5. Persist the resulting transaction ID back into runtime and audit state.
+6. Verify the proof through the isolated frontend or `POST /api/attest/verify`.
 
 This prevents the blockchain bonus from becoming a control-path dependency.
+
+### Stellar Setup
+Use testnet for all development.
+
+1. Install Soroban CLI
+
+```bash
+cargo install --locked soroban-cli
+```
+
+2. Generate a local testnet identity
+
+```bash
+soroban keys generate dev-admin
+soroban keys address dev-admin
+soroban keys secret dev-admin
+```
+
+3. Fund the account on testnet
+
+```bash
+curl "https://friendbot.stellar.org/?addr=$(soroban keys address dev-admin)"
+```
+
+4. Add the Soroban testnet network
+
+```bash
+soroban network add testnet \
+  --rpc-url https://soroban-testnet.stellar.org \
+  --network-passphrase "Test SDF Network ; September 2015"
+```
+
+5. Build the contract
+
+```bash
+rustup target add wasm32v1-none
+soroban contract build --manifest-path contracts/incident-attestation/Cargo.toml
+```
+
+6. Deploy the contract
+
+```bash
+soroban contract deploy \
+  --wasm contracts/incident-attestation/target/wasm32v1-none/release/incident_attestation.wasm \
+  --source dev-admin \
+  --network testnet
+```
+
+7. Set local backend env values
+
+```env
+STELLAR_NETWORK=testnet
+STELLAR_RPC_URL=https://soroban-testnet.stellar.org
+STELLAR_SECRET_KEY=<secret from `soroban keys secret dev-admin`>
+STELLAR_CONTRACT_ID=<contract id from `soroban contract deploy`>
+```
+
+8. Redeploy the backend after updating the Kubernetes secret
+
+```bash
+bash scripts/deploy_backend.sh
+```
+
+### Proven Live Attestation Flow
+The current repo has been validated end-to-end against a deployed Soroban testnet contract:
+
+1. Seed or resolve an incident with `POST /api/incidents/run-once`
+2. Anchor it with `POST /api/attest`
+3. Confirm a real Soroban transaction ID is returned
+4. Verify it with `POST /api/attest/verify`
+5. Confirm the on-chain hash matches the backend-computed incident hash
 
 ## Assumptions
 - Python 3.11+ is installed.
 - `minikube`, `kubectl`, and `cloudflared` are available locally.
 - Slack app credentials and Gemini API credentials are supplied through `.env`.
-- The Soroban bonus path may need extra tooling later for actual on-chain deployment.
+- The Soroban bonus path now requires Soroban CLI plus a funded Stellar testnet account and deployed contract.
 
 ## Current Scaffold Boundaries
 - Prometheus is not wired yet.
 - The Gemini path includes deterministic fallbacks for local smoke testing.
-- The Soroban contract invocation is intentionally stubbed until the bonus path is activated.
+- The Soroban backend path is wired for testnet anchoring and verification, but the frontend is still a lightweight operator console rather than a polished audit product.
 - The checkpoint store is local file-backed, not a shared database-backed runtime store.
 - `OOMKilled` now has a real HITL recommendation path, but the actual workload memory patch remains intentionally manual in the first pass.
 - `Pending Pod` now has a better recommendation path, but still does not mutate cluster resources automatically.
