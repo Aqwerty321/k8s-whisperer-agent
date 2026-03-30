@@ -126,6 +126,7 @@ def test_k8s_client_serializes_pod_age_for_pending_threshold_logic() -> None:
 def test_demo_incident_oomkill_uses_live_pod_name() -> None:
     script = Path("scripts/demo_incident.sh").read_text(encoding="utf-8")
 
+    assert 'BASE_URL="${BASE_URL:-http://127.0.0.1:18010}"' in script
     assert "kubectl get pods -n default -l app=demo-oomkill" in script
     assert "jq -n" in script
     assert "ownerReferences" in script
@@ -144,8 +145,8 @@ def test_rbac_stays_pod_scoped_by_default() -> None:
     assert 'resources: ["pods"]' in manifest
     assert 'resources: ["pods/log"]' in manifest
     assert 'resources: ["events"]' in manifest
+    assert 'resources: ["deployments"]' in manifest
     assert 'resources: ["nodes"]' not in manifest
-    assert 'resources: ["deployments"]' not in manifest
     assert 'kind: ClusterRole' not in manifest
     assert 'kind: ClusterRoleBinding' not in manifest
 

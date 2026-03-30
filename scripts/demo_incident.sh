@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-BASE_URL="${BASE_URL:-http://localhost:8010}"
+BASE_URL="${BASE_URL:-http://127.0.0.1:18010}"
 SCENARIO="${1:-crashloop}"
 
 case "${SCENARIO}" in
