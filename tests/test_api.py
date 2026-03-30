@@ -226,6 +226,68 @@ def test_incident_report_endpoint_returns_markdown() -> None:
     assert "Operator rejected remediation" in response.text
 
 
+def test_attest_endpoint_uses_runtime_incident_when_available() -> None:
+    with TestClient(app) as client:
+        client.app.state.runtime._latest_states["incident-attest-1"] = {
+            "incident_id": "incident-attest-1",
+            "status": "completed",
+            "namespace": "default",
+            "awaiting_human": False,
+            "approved": True,
+            "diagnosis": "CrashLoop recovered after restart.",
+            "diagnosis_evidence": ["logs: crashloop recovered"],
+            "result": "Restarted pod and verified recovery.",
+            "updated_at": "2026-03-30T00:00:00Z",
+            "anomalies": [
+                {
+                    "anomaly_type": "CrashLoopBackOff",
+                    "resource_name": "demo-crashloop",
+                    "summary": "Pod is crashlooping.",
+                }
+            ],
+            "plan": {
+                "action": "restart_pod",
+            },
+        }
+
+        response = client.post("/api/attest", json={"incident_id": "incident-attest-1"})
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["incident_id"] == "incident-attest-1"
+    assert payload["source"] == "runtime"
+    assert payload["record"]["incident_id"] == "incident-attest-1"
+    assert payload["attestation"]["stub"] is True
+
+
+def test_attest_endpoint_falls_back_to_audit_record() -> None:
+    with TestClient(app) as client:
+        client.app.state.runtime._latest_states.pop("incident-attest-audit-1", None)
+        client.app.state.audit_logger.log(
+            {
+                "incident_id": "incident-attest-audit-1",
+                "timestamp": "2026-03-30T00:00:00Z",
+                "namespace": "default",
+                "anomaly_type": "OOMKilled",
+                "decision": "approved",
+                "action": "patch_pod",
+                "diagnosis": "Container exceeded memory limit.",
+                "diagnosis_evidence": ["event OOMKilled"],
+                "explanation": "Approved recommendation for more memory.",
+                "result": "Recorded recommendation only.",
+            }
+        )
+
+        response = client.post("/api/attest", json={"incident_id": "incident-attest-audit-1"})
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["source"] == "audit"
+    assert payload["record"]["incident_id"] == "incident-attest-audit-1"
+    assert payload["record"]["audit_entries"]
+    assert payload["attestation"]["stub"] is True
+
+
 def test_incident_list_supports_filters() -> None:
     with TestClient(app) as client:
         client.app.state.runtime._latest_states["incident-filter-1"] = {

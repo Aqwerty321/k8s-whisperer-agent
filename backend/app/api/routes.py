@@ -345,7 +345,9 @@ def _resume_incident_background(
 @router.post("/api/attest")
 async def attest_incident(payload: AttestationRequest, request: Request) -> dict[str, Any]:
     incident = request.app.state.runtime.get_incident(payload.incident_id)
-    if incident is None:
+    audit_entries = request.app.state.audit_logger.read_incident(payload.incident_id)
+    attestation_target = _attestation_target(incident=incident, audit_entries=audit_entries)
+    if attestation_target is None:
         raise HTTPException(status_code=404, detail="Incident not found.")
 
     settings = request.app.state.settings
@@ -355,7 +357,7 @@ async def attest_incident(payload: AttestationRequest, request: Request) -> dict
         rpc_url=settings.stellar_rpc_url,
         contract_id=settings.stellar_contract_id,
     )
-    incident_hash = hash_incident_record(incident)
+    incident_hash = hash_incident_record(attestation_target)
     attestation = attestor.anchor_incident(
         incident_id=payload.incident_id,
         incident_hash=incident_hash,
@@ -363,6 +365,8 @@ async def attest_incident(payload: AttestationRequest, request: Request) -> dict
     return {
         "incident_id": payload.incident_id,
         "incident_hash": incident_hash,
+        "source": "runtime" if incident is not None else "audit",
+        "record": attestation_target,
         "attestation": attestation,
     }
 
@@ -384,6 +388,46 @@ def _summarize_incident(incident: dict[str, Any]) -> dict[str, Any]:
         "approved": incident.get("approved"),
         "slack_message_ts": incident.get("slack_message_ts"),
         "result": incident.get("result"),
+    }
+
+
+def _attestation_target(*, incident: dict[str, Any] | None, audit_entries: list[dict[str, Any]]) -> dict[str, Any] | None:
+    if incident is not None:
+        return {
+            "incident_id": incident.get("incident_id"),
+            "status": incident.get("status"),
+            "namespace": incident.get("namespace"),
+            "anomalies": incident.get("anomalies") or [],
+            "diagnosis": incident.get("diagnosis"),
+            "diagnosis_evidence": incident.get("diagnosis_evidence") or [],
+            "plan": incident.get("plan"),
+            "approved": incident.get("approved"),
+            "result": incident.get("result"),
+            "updated_at": incident.get("updated_at"),
+            "audit_entries": audit_entries,
+        }
+    if not audit_entries:
+        return None
+    latest = audit_entries[-1]
+    return {
+        "incident_id": latest.get("incident_id"),
+        "status": "completed",
+        "namespace": latest.get("namespace"),
+        "anomalies": [
+            {
+                "anomaly_type": latest.get("anomaly_type"),
+                "summary": latest.get("explanation") or latest.get("diagnosis") or latest.get("result"),
+            }
+        ],
+        "diagnosis": latest.get("diagnosis"),
+        "diagnosis_evidence": latest.get("diagnosis_evidence") or [],
+        "plan": {
+            "action": latest.get("action"),
+        },
+        "approved": latest.get("decision") == "approved",
+        "result": latest.get("result"),
+        "updated_at": latest.get("timestamp"),
+        "audit_entries": audit_entries,
     }
 
 

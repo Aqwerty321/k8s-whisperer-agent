@@ -131,13 +131,14 @@ class AgentRuntime:
         snapshot = self._read_checkpoint_state(incident_id)
         if snapshot is not None:
             normalized = self._snapshot_to_incident(snapshot=snapshot, incident_id=incident_id)
-            with self._lock:
-                self._latest_states[incident_id] = normalized
-                if normalized.get("awaiting_human"):
-                    self._pending_incidents.add(incident_id)
-                else:
-                    self._pending_incidents.discard(incident_id)
-            self.incident_tracker.hydrate_incident(normalized)
+            if _incident_has_substance(normalized):
+                with self._lock:
+                    self._latest_states[incident_id] = normalized
+                    if normalized.get("awaiting_human"):
+                        self._pending_incidents.add(incident_id)
+                    else:
+                        self._pending_incidents.discard(incident_id)
+                self.incident_tracker.hydrate_incident(normalized)
         with self._lock:
             return self._latest_states.get(incident_id)
 
@@ -286,3 +287,22 @@ def _scoped_anomalies(values: dict[str, Any]) -> list[Any]:
         or str(anomaly.get("workload_name") or "") in seeded_resource_names
     ]
     return filtered or anomalies
+
+
+def _incident_has_substance(values: dict[str, Any]) -> bool:
+    meaningful_keys = (
+        "anomalies",
+        "diagnosis",
+        "plan",
+        "result",
+        "approved",
+        "awaiting_human",
+        "slack_message_ts",
+        "audit_log",
+        "error",
+    )
+    for key in meaningful_keys:
+        value = values.get(key)
+        if value not in (None, "", [], {}, False):
+            return True
+    return False

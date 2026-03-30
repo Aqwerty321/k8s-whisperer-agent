@@ -505,6 +505,14 @@ def test_runtime_recovers_pending_incident_from_persistent_checkpoint(tmp_path) 
     assert incident["incident_id"] == incident_id
 
 
+def test_runtime_ignores_empty_checkpoint_shell_for_unknown_incident(tmp_path) -> None:
+    runtime = build_runtime(tmp_path=tmp_path, k8s_client=FakeK8sClient())
+
+    incident = runtime.get_incident("incident-missing-shell")
+
+    assert incident is None
+
+
 def test_runtime_routes_oomkill_to_hitl_recommendation(tmp_path) -> None:
     k8s_client = FakeK8sClient()
     k8s_client.mode = "oomkill"
