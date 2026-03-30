@@ -296,6 +296,7 @@ class K8sClient:
         deadline = time.time() + timeout_seconds
         last_error: str | None = None
         last_status: dict[str, Any] | None = None
+        attempt = 0
 
         while time.time() < deadline:
             try:
@@ -340,12 +341,13 @@ class K8sClient:
             except Exception as exc:
                 last_error = self._format_error(exc)
 
-            time.sleep(poll_interval_seconds)
+            attempt += 1
+            time.sleep(self._next_poll_delay(attempt=attempt, base_delay=poll_interval_seconds, max_delay=5.0))
 
         return {
             "ok": False,
             "recovered": False,
-            "message": last_error or f"Timed out waiting for {kind} {namespace}/{name} rollout.",
+            "message": last_error or self._rollout_timeout_message(kind=kind, name=name, namespace=namespace, status=last_status),
             "resource": last_status,
         }
 
@@ -411,6 +413,7 @@ class K8sClient:
         deadline = time.time() + timeout_seconds
         last_snapshot: dict[str, Any] | None = None
         last_error: str | None = None
+        attempt = 0
 
         while time.time() < deadline:
             description = self.describe_pod(name=name, namespace=namespace)
@@ -450,12 +453,13 @@ class K8sClient:
                         "pod": replacement,
                     }
 
-            time.sleep(poll_interval_seconds)
+            attempt += 1
+            time.sleep(self._next_poll_delay(attempt=attempt, base_delay=poll_interval_seconds, max_delay=5.0))
 
         return {
             "ok": False,
             "recovered": False,
-            "message": last_error or f"Timed out waiting for pod {namespace}/{name} to recover.",
+            "message": last_error or self._pod_timeout_message(name=name, namespace=namespace, pod=last_snapshot, expected_absent=expected_absent),
             "pod": last_snapshot,
         }
 
@@ -474,6 +478,61 @@ class K8sClient:
             if self._pod_is_healthy(pod):
                 return pod
         return None
+
+    def _next_poll_delay(self, *, attempt: int, base_delay: float, max_delay: float) -> float:
+        if base_delay <= 0:
+            return 0.0
+        return min(base_delay * (2 ** max(attempt - 1, 0)), max_delay)
+
+    def _rollout_timeout_message(
+        self,
+        *,
+        kind: str,
+        name: str,
+        namespace: str,
+        status: dict[str, Any] | None,
+    ) -> str:
+        if not status:
+            return f"Timed out waiting for {kind} {namespace}/{name} rollout."
+        return (
+            f"Timed out waiting for {kind} {namespace}/{name} rollout; "
+            f"last observed generation={status.get('generation')} observed_generation={status.get('observed_generation')} "
+            f"updated_replicas={status.get('updated_replicas')} available_replicas={status.get('available_replicas')} "
+            f"ready_replicas={status.get('ready_replicas')} desired_replicas={status.get('replicas')}."
+        )
+
+    def _pod_timeout_message(
+        self,
+        *,
+        name: str,
+        namespace: str,
+        pod: dict[str, Any] | None,
+        expected_absent: bool,
+    ) -> str:
+        if expected_absent:
+            if pod:
+                return (
+                    f"Timed out waiting for pod {namespace}/{name} to disappear; "
+                    f"last observed phase={pod.get('phase')} reason={pod.get('reason')}."
+                )
+            return f"Timed out waiting for pod {namespace}/{name} to disappear."
+        if not pod:
+            return f"Timed out waiting for pod {namespace}/{name} to recover."
+        return (
+            f"Timed out waiting for pod {namespace}/{name} to recover; "
+            f"last observed phase={pod.get('phase')} reason={pod.get('reason')} "
+            f"ready={self._pod_ready_summary(pod)}."
+        )
+
+    def _pod_ready_summary(self, pod: dict[str, Any]) -> str:
+        statuses = pod.get("container_statuses") or []
+        if not statuses:
+            return "no containers"
+        return ", ".join(
+            f"{status.get('name', 'unknown')}={bool(status.get('ready'))}"
+            for status in statuses
+            if isinstance(status, dict)
+        ) or "no containers"
 
     def _pod_is_healthy(self, pod: dict[str, Any]) -> bool:
         if str(pod.get("phase")) != "Running":

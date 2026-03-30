@@ -88,3 +88,60 @@ def test_serialize_pod_prefers_current_terminated_state_reason() -> None:
     serialized = client._serialize_pod(pod)
 
     assert serialized["container_statuses"][0]["terminated_reason"] == "OOMKilled"
+
+
+def test_next_poll_delay_uses_bounded_exponential_backoff() -> None:
+    client = K8sClient()
+
+    first = client._next_poll_delay(attempt=1, base_delay=0.5, max_delay=5.0)
+    second = client._next_poll_delay(attempt=2, base_delay=0.5, max_delay=5.0)
+    sixth = client._next_poll_delay(attempt=6, base_delay=0.5, max_delay=5.0)
+
+    assert first == 0.5
+    assert second == 1.0
+    assert sixth == 5.0
+
+
+def test_rollout_timeout_message_includes_last_observed_status() -> None:
+    client = K8sClient()
+
+    message = client._rollout_timeout_message(
+        kind="Deployment",
+        name="demo-api",
+        namespace="default",
+        status={
+            "generation": 4,
+            "observed_generation": 3,
+            "updated_replicas": 1,
+            "available_replicas": 1,
+            "ready_replicas": 0,
+            "replicas": 3,
+        },
+    )
+
+    assert "observed_generation=3" in message
+    assert "updated_replicas=1" in message
+    assert "desired_replicas=3" in message
+
+
+def test_pod_timeout_message_includes_last_observed_readiness() -> None:
+    client = K8sClient()
+
+    message = client._pod_timeout_message(
+        name="demo-api-123",
+        namespace="default",
+        expected_absent=False,
+        pod={
+            "phase": "Running",
+            "reason": "CrashLoopBackOff",
+            "container_statuses": [
+                {"name": "api", "ready": False},
+                {"name": "sidecar", "ready": True},
+            ],
+        },
+    )
+
+    assert "phase=Running" in message
+    assert "reason=CrashLoopBackOff" in message
+    assert "api=False" in message
+    assert "sidecar=True" in message
