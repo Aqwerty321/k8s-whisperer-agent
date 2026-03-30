@@ -4,6 +4,8 @@ K8sWhisperer is an autonomous Kubernetes incident-response system built for the 
 
 The project is designed for a real `minikube` demo, not a mock-only prototype. Low-blast-radius actions can be executed automatically. Higher-risk actions pause for human approval in Slack and resume through a FastAPI webhook with persistent checkpoint state.
 
+Live Soroban testnet contract ID: `CBTXP7ZFNGAZ5TK5CRFKRJUHRKPOBESZ6PWD4CC4ZDNYPI774642LQSN`
+
 ## Problem Statement Alignment
 
 The PS requires an end-to-end incident response loop:
