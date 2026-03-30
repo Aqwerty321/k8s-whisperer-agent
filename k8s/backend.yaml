@@ -70,6 +70,26 @@ spec:
               value: "false"
             - name: ENABLE_NODE_READ_OBSERVATION
               value: "false"
+            - name: STELLAR_NETWORK
+              value: testnet
+            - name: STELLAR_RPC_URL
+              valueFrom:
+                secretKeyRef:
+                  name: k8s-whisperer-secrets
+                  key: stellar_rpc_url
+                  optional: true
+            - name: STELLAR_SECRET_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: k8s-whisperer-secrets
+                  key: stellar_secret_key
+                  optional: true
+            - name: STELLAR_CONTRACT_ID
+              valueFrom:
+                secretKeyRef:
+                  name: k8s-whisperer-secrets
+                  key: stellar_contract_id
+                  optional: true
             - name: SLACK_BOT_TOKEN
               valueFrom:
                 secretKeyRef:

@@ -47,6 +47,15 @@ def test_deploy_backend_script_forces_rollout_restart() -> None:
     assert 'show_rollout_debug' in script
 
 
+def test_backend_manifest_exposes_stellar_env_vars() -> None:
+    manifest = Path("k8s/backend.yaml").read_text(encoding="utf-8")
+
+    assert 'name: STELLAR_NETWORK' in manifest
+    assert 'name: STELLAR_RPC_URL' in manifest
+    assert 'name: STELLAR_SECRET_KEY' in manifest
+    assert 'name: STELLAR_CONTRACT_ID' in manifest
+
+
 def test_crashloop_demo_uses_replacement_state_marker() -> None:
     manifest = Path("k8s/demo/crashloop.yaml").read_text(encoding="utf-8")
 

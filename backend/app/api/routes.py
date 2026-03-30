@@ -467,7 +467,6 @@ def _attestation_target(*, incident: dict[str, Any] | None, audit_entries: list[
             "result": incident.get("result"),
             "decision": _decision_for_attestation(incident=incident, audit_entries=audit_entries),
             "timestamp": incident.get("updated_at") or incident.get("created_at"),
-            "tx_id": _incident_tx_id(incident=incident, audit_entries=audit_entries),
         }
     if not audit_entries:
         return None
@@ -488,10 +487,9 @@ def _attestation_target(*, incident: dict[str, Any] | None, audit_entries: list[
             "action": latest.get("action"),
         },
         "approved": latest.get("decision") in {"approved", "auto_approved"},
-        "decision": latest.get("decision"),
+        "decision": _audit_decision_for_attestation(latest),
         "result": latest.get("result"),
         "timestamp": latest.get("timestamp"),
-        "tx_id": latest.get("tx_id"),
     }
 
 
@@ -514,7 +512,7 @@ def _latest_audit_summary_entry(audit_entries: list[dict[str, Any]]) -> dict[str
 
 def _decision_for_attestation(*, incident: dict[str, Any], audit_entries: list[dict[str, Any]]) -> str | None:
     if audit_entries:
-        latest_decision = audit_entries[-1].get("decision")
+        latest_decision = _audit_decision_for_attestation(_latest_audit_summary_entry(audit_entries) or {})
         if latest_decision:
             return str(latest_decision)
     approved = incident.get("approved")
@@ -526,6 +524,13 @@ def _decision_for_attestation(*, incident: dict[str, Any], audit_entries: list[d
     if approved is True:
         return "auto_approved"
     return None
+
+
+def _audit_decision_for_attestation(entry: dict[str, Any]) -> str | None:
+    decision = entry.get("decision")
+    if decision == "attested":
+        return None
+    return str(decision) if decision else None
 
 
 def _persist_attestation_tx(*, request: Request, incident_id: str, tx_id: str, attestation_source: str) -> None:

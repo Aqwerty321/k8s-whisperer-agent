@@ -15,5 +15,5 @@ def hash_incident_record(record: Mapping[str, Any]) -> str:
 
 
 def contract_incident_key(incident_id: str) -> str:
-    digest = hashlib.sha256(str(incident_id).encode("utf-8")).hexdigest()[:24]
+    digest = hashlib.sha256(str(incident_id).encode("utf-8")).hexdigest()[:23]
     return f"incident_{digest}"
