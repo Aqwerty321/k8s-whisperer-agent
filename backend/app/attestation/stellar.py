@@ -2,6 +2,8 @@ from __future__ import annotations
 
 from typing import Any
 
+from .hasher import contract_incident_key
+
 
 class StellarAttestor:
     def __init__(
@@ -21,11 +23,13 @@ class StellarAttestor:
         return bool(self.secret_key)
 
     def anchor_incident(self, *, incident_id: str, incident_hash: str) -> dict[str, Any]:
+        contract_key = contract_incident_key(incident_id)
         if not self.is_configured():
             return {
                 "ok": False,
                 "stub": True,
                 "incident_id": incident_id,
+                "contract_key": contract_key,
                 "incident_hash": incident_hash,
                 "tx_id": None,
                 "message": "Stellar attestation is not configured.",
@@ -36,6 +40,7 @@ class StellarAttestor:
                 "ok": False,
                 "stub": True,
                 "incident_id": incident_id,
+                "contract_key": contract_key,
                 "incident_hash": incident_hash,
                 "tx_id": None,
                 "message": "Contract ID is not configured. Deploy the Soroban contract first.",
@@ -47,16 +52,19 @@ class StellarAttestor:
             "ok": False,
             "stub": True,
             "incident_id": incident_id,
+            "contract_key": contract_key,
             "incident_hash": incident_hash,
             "tx_id": None,
             "message": "Soroban contract invocation is not wired yet in the scaffold.",
         }
 
     def verify_incident(self, *, incident_id: str, incident_hash: str, tx_id: str | None) -> dict[str, Any]:
+        contract_key = contract_incident_key(incident_id)
         return {
             "ok": bool(tx_id),
             "stub": True,
             "incident_id": incident_id,
+            "contract_key": contract_key,
             "incident_hash": incident_hash,
             "tx_id": tx_id,
             "verified": bool(tx_id),

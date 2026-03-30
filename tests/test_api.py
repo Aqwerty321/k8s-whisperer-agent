@@ -257,6 +257,8 @@ def test_attest_endpoint_uses_runtime_incident_when_available() -> None:
     assert payload["incident_id"] == "incident-attest-1"
     assert payload["source"] == "runtime"
     assert payload["record"]["incident_id"] == "incident-attest-1"
+    assert payload["record"]["anomaly"]["anomaly_type"] == "CrashLoopBackOff"
+    assert payload["contract_key"].startswith("incident_")
     assert payload["attestation"]["stub"] is True
 
 
@@ -284,8 +286,36 @@ def test_attest_endpoint_falls_back_to_audit_record() -> None:
     payload = response.json()
     assert payload["source"] == "audit"
     assert payload["record"]["incident_id"] == "incident-attest-audit-1"
-    assert payload["record"]["audit_entries"]
+    assert payload["record"]["anomaly"]["anomaly_type"] == "OOMKilled"
     assert payload["attestation"]["stub"] is True
+
+
+def test_attest_verify_endpoint_uses_persisted_tx_id_from_audit() -> None:
+    with TestClient(app) as client:
+        client.app.state.runtime._latest_states.pop("incident-attest-verify-1", None)
+        client.app.state.audit_logger.log(
+            {
+                "incident_id": "incident-attest-verify-1",
+                "timestamp": "2026-03-30T00:00:00Z",
+                "namespace": "default",
+                "anomaly_type": "OOMKilled",
+                "decision": "approved",
+                "action": "patch_pod",
+                "diagnosis": "Container exceeded memory limit.",
+                "diagnosis_evidence": ["event OOMKilled"],
+                "explanation": "Approved recommendation for more memory.",
+                "result": "Recorded recommendation only.",
+                "tx_id": "stellar-tx-123",
+            }
+        )
+
+        response = client.post("/api/attest/verify", json={"incident_id": "incident-attest-verify-1"})
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["source"] == "audit"
+    assert payload["verification"]["tx_id"] == "stellar-tx-123"
+    assert payload["verification"]["verified"] is True
 
 
 def test_incident_list_supports_filters() -> None:

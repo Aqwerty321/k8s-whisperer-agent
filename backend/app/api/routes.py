@@ -8,7 +8,7 @@ from fastapi import Query
 from fastapi.responses import PlainTextResponse
 from pydantic import BaseModel, Field
 
-from ..attestation import StellarAttestor, hash_incident_record
+from ..attestation import StellarAttestor, contract_incident_key, hash_incident_record
 from ..demo import build_demo_coverage
 
 
@@ -20,6 +20,11 @@ class RunOnceRequest(BaseModel):
 
 class AttestationRequest(BaseModel):
     incident_id: str
+
+
+class AttestationVerifyRequest(BaseModel):
+    incident_id: str
+    tx_id: str | None = None
 
 
 class PollerToggleRequest(BaseModel):
@@ -362,12 +367,53 @@ async def attest_incident(payload: AttestationRequest, request: Request) -> dict
         incident_id=payload.incident_id,
         incident_hash=incident_hash,
     )
+    tx_id = attestation.get("tx_id") if isinstance(attestation, dict) else None
+    if tx_id:
+        _persist_attestation_tx(
+            request=request,
+            incident_id=payload.incident_id,
+            tx_id=str(tx_id),
+            attestation_source=("runtime" if incident is not None else "audit"),
+        )
     return {
         "incident_id": payload.incident_id,
         "incident_hash": incident_hash,
+        "contract_key": contract_incident_key(payload.incident_id),
         "source": "runtime" if incident is not None else "audit",
         "record": attestation_target,
         "attestation": attestation,
+    }
+
+
+@router.post("/api/attest/verify")
+async def verify_attestation(payload: AttestationVerifyRequest, request: Request) -> dict[str, Any]:
+    incident = request.app.state.runtime.get_incident(payload.incident_id)
+    audit_entries = request.app.state.audit_logger.read_incident(payload.incident_id)
+    attestation_target = _attestation_target(incident=incident, audit_entries=audit_entries)
+    if attestation_target is None:
+        raise HTTPException(status_code=404, detail="Incident not found.")
+
+    settings = request.app.state.settings
+    attestor = StellarAttestor(
+        network=settings.stellar_network,
+        secret_key=settings.stellar_secret_key,
+        rpc_url=settings.stellar_rpc_url,
+        contract_id=settings.stellar_contract_id,
+    )
+    tx_id = payload.tx_id or _incident_tx_id(incident=incident, audit_entries=audit_entries)
+    incident_hash = hash_incident_record(attestation_target)
+    verification = attestor.verify_incident(
+        incident_id=payload.incident_id,
+        incident_hash=incident_hash,
+        tx_id=tx_id,
+    )
+    return {
+        "incident_id": payload.incident_id,
+        "incident_hash": incident_hash,
+        "contract_key": contract_incident_key(payload.incident_id),
+        "source": "runtime" if incident is not None else "audit",
+        "record": attestation_target,
+        "verification": verification,
     }
 
 
@@ -393,42 +439,119 @@ def _summarize_incident(incident: dict[str, Any]) -> dict[str, Any]:
 
 def _attestation_target(*, incident: dict[str, Any] | None, audit_entries: list[dict[str, Any]]) -> dict[str, Any] | None:
     if incident is not None:
+        anomalies = incident.get("anomalies") or []
+        first_anomaly = anomalies[0] if anomalies else {}
+        plan = incident.get("plan") or {}
         return {
             "incident_id": incident.get("incident_id"),
             "status": incident.get("status"),
             "namespace": incident.get("namespace"),
-            "anomalies": incident.get("anomalies") or [],
+            "anomaly": {
+                "anomaly_type": first_anomaly.get("anomaly_type"),
+                "resource_kind": first_anomaly.get("resource_kind"),
+                "resource_name": first_anomaly.get("resource_name"),
+                "workload_kind": first_anomaly.get("workload_kind"),
+                "workload_name": first_anomaly.get("workload_name"),
+                "summary": first_anomaly.get("summary"),
+            },
             "diagnosis": incident.get("diagnosis"),
             "diagnosis_evidence": incident.get("diagnosis_evidence") or [],
-            "plan": incident.get("plan"),
+            "plan": {
+                "action": plan.get("action"),
+                "target_kind": plan.get("target_kind"),
+                "target_name": plan.get("target_name"),
+                "blast_radius": plan.get("blast_radius"),
+                "requires_human": plan.get("requires_human"),
+            },
             "approved": incident.get("approved"),
             "result": incident.get("result"),
-            "updated_at": incident.get("updated_at"),
-            "audit_entries": audit_entries,
+            "decision": _decision_for_attestation(incident=incident, audit_entries=audit_entries),
+            "timestamp": incident.get("updated_at") or incident.get("created_at"),
+            "tx_id": _incident_tx_id(incident=incident, audit_entries=audit_entries),
         }
     if not audit_entries:
         return None
-    latest = audit_entries[-1]
+    latest = _latest_audit_summary_entry(audit_entries)
+    if latest is None:
+        return None
     return {
         "incident_id": latest.get("incident_id"),
         "status": "completed",
         "namespace": latest.get("namespace"),
-        "anomalies": [
-            {
-                "anomaly_type": latest.get("anomaly_type"),
-                "summary": latest.get("explanation") or latest.get("diagnosis") or latest.get("result"),
-            }
-        ],
+        "anomaly": {
+            "anomaly_type": latest.get("anomaly_type"),
+            "summary": latest.get("explanation") or latest.get("diagnosis") or latest.get("result"),
+        },
         "diagnosis": latest.get("diagnosis"),
         "diagnosis_evidence": latest.get("diagnosis_evidence") or [],
         "plan": {
             "action": latest.get("action"),
         },
-        "approved": latest.get("decision") == "approved",
+        "approved": latest.get("decision") in {"approved", "auto_approved"},
+        "decision": latest.get("decision"),
         "result": latest.get("result"),
-        "updated_at": latest.get("timestamp"),
-        "audit_entries": audit_entries,
+        "timestamp": latest.get("timestamp"),
+        "tx_id": latest.get("tx_id"),
     }
+
+
+def _incident_tx_id(*, incident: dict[str, Any] | None, audit_entries: list[dict[str, Any]]) -> str | None:
+    if incident and incident.get("attestation_tx_id"):
+        return str(incident.get("attestation_tx_id"))
+    for entry in reversed(audit_entries):
+        tx_id = entry.get("tx_id")
+        if tx_id:
+            return str(tx_id)
+    return None
+
+
+def _latest_audit_summary_entry(audit_entries: list[dict[str, Any]]) -> dict[str, Any] | None:
+    for entry in reversed(audit_entries):
+        if entry.get("anomaly_type") or entry.get("diagnosis") or entry.get("explanation") or entry.get("result"):
+            return entry
+    return audit_entries[-1] if audit_entries else None
+
+
+def _decision_for_attestation(*, incident: dict[str, Any], audit_entries: list[dict[str, Any]]) -> str | None:
+    if audit_entries:
+        latest_decision = audit_entries[-1].get("decision")
+        if latest_decision:
+            return str(latest_decision)
+    approved = incident.get("approved")
+    plan = incident.get("plan") or {}
+    if approved is True and bool(plan.get("requires_human")):
+        return "approved"
+    if approved is False:
+        return "rejected"
+    if approved is True:
+        return "auto_approved"
+    return None
+
+
+def _persist_attestation_tx(*, request: Request, incident_id: str, tx_id: str, attestation_source: str) -> None:
+    incident = request.app.state.runtime.get_incident(incident_id)
+    audit_entries = request.app.state.audit_logger.read_incident(incident_id)
+    summary_entry = _latest_audit_summary_entry(audit_entries)
+    if incident is not None:
+        incident["attestation_tx_id"] = tx_id
+        runtime = request.app.state.runtime
+        with runtime._lock:
+            runtime._latest_states[incident_id] = incident
+    request.app.state.audit_logger.log(
+        {
+            "incident_id": incident_id,
+            "timestamp": (incident or {}).get("updated_at") or (summary_entry or {}).get("timestamp"),
+            "namespace": (incident or {}).get("namespace") or (summary_entry or {}).get("namespace"),
+            "anomaly_type": (summary_entry or {}).get("anomaly_type"),
+            "decision": "attested",
+            "action": "anchor_incident",
+            "diagnosis": (summary_entry or {}).get("diagnosis") or (incident or {}).get("diagnosis"),
+            "diagnosis_evidence": (summary_entry or {}).get("diagnosis_evidence") or (incident or {}).get("diagnosis_evidence") or [],
+            "explanation": (summary_entry or {}).get("explanation") or (incident or {}).get("explanation"),
+            "result": f"Recorded attestation transaction {tx_id} from {attestation_source} record.",
+            "tx_id": tx_id,
+        }
+    )
 
 
 def _render_incident_report(*, incident: dict[str, Any], audit_entries: list[dict[str, Any]]) -> str:

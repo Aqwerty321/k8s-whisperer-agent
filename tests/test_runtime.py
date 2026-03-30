@@ -513,6 +513,33 @@ def test_runtime_ignores_empty_checkpoint_shell_for_unknown_incident(tmp_path) -
     assert incident is None
 
 
+def test_runtime_does_not_hydrate_empty_checkpoint_shell_on_startup(tmp_path) -> None:
+    settings = build_settings(tmp_path)
+    runtime = AgentRuntime(
+        settings=settings,
+        audit_logger=AuditLogger(settings.audit_log_path),
+        k8s_client=FakeK8sClient(),
+        llm_client=LLMClient(api_key=""),
+        prometheus_client=FakePrometheusClient(),
+        slack_client=RecordingSlackClient(),
+    )
+    runtime.graph.update_state({"configurable": {"thread_id": "incident-empty-shell"}}, {}, as_node="observe")
+
+    rehydrated = AgentRuntime(
+        settings=settings,
+        audit_logger=AuditLogger(settings.audit_log_path),
+        k8s_client=FakeK8sClient(),
+        llm_client=LLMClient(api_key=""),
+        prometheus_client=FakePrometheusClient(),
+        slack_client=RecordingSlackClient(),
+    )
+
+    status = rehydrated.get_status()
+
+    assert all(incident.get("incident_id") != "incident-empty-shell" for incident in status["latest_incidents"])
+    assert rehydrated.get_incident("incident-empty-shell") is None
+
+
 def test_runtime_routes_oomkill_to_hitl_recommendation(tmp_path) -> None:
     k8s_client = FakeK8sClient()
     k8s_client.mode = "oomkill"

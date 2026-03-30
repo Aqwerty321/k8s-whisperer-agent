@@ -31,6 +31,7 @@ const inputStyle = {
 
 export default function App() {
   const [incidentId, setIncidentId] = useState("");
+  const [txId, setTxId] = useState("");
   const [message, setMessage] = useState("Pick a resolved incident ID, then anchor or verify its proof.");
 
   const handleAnchor = async () => {
@@ -54,7 +55,7 @@ export default function App() {
       return;
     }
 
-    const result = await verifyProofLocally({ incidentId });
+    const result = await verifyProofLocally({ incidentId, txId });
     setMessage(JSON.stringify(result, null, 2));
   };
 
@@ -80,6 +81,16 @@ export default function App() {
               value={incidentId}
               onChange={(event) => setIncidentId(event.target.value)}
               placeholder="incident-abc123"
+            />
+          </label>
+
+          <label>
+            <span style={{ display: "block", marginBottom: "0.5rem" }}>Transaction ID (optional)</span>
+            <input
+              style={inputStyle}
+              value={txId}
+              onChange={(event) => setTxId(event.target.value)}
+              placeholder="stellar-transaction-id"
             />
           </label>
 

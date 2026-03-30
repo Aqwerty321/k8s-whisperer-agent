@@ -12,3 +12,8 @@ def canonical_incident_json(record: Mapping[str, Any]) -> str:
 def hash_incident_record(record: Mapping[str, Any]) -> str:
     payload = canonical_incident_json(record).encode("utf-8")
     return hashlib.sha256(payload).hexdigest()
+
+
+def contract_incident_key(incident_id: str) -> str:
+    digest = hashlib.sha256(str(incident_id).encode("utf-8")).hexdigest()[:24]
+    return f"incident_{digest}"

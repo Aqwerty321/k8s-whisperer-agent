@@ -189,6 +189,8 @@ class AgentRuntime:
             if snapshot is None:
                 continue
             normalized = self._snapshot_to_incident(snapshot=snapshot, incident_id=incident_id)
+            if not _incident_has_substance(normalized):
+                continue
             with self._lock:
                 self._latest_states[incident_id] = normalized
                 if normalized.get("awaiting_human"):
@@ -290,6 +292,10 @@ def _scoped_anomalies(values: dict[str, Any]) -> list[Any]:
 
 
 def _incident_has_substance(values: dict[str, Any]) -> bool:
+    checkpoint = values.get("checkpoint") if isinstance(values.get("checkpoint"), dict) else None
+    interrupts = values.get("interrupts") if isinstance(values.get("interrupts"), list) else []
+    if checkpoint and not interrupts and not values.get("anomalies") and not values.get("diagnosis") and not values.get("plan") and not values.get("result") and values.get("awaiting_human"):
+        return False
     meaningful_keys = (
         "anomalies",
         "diagnosis",
