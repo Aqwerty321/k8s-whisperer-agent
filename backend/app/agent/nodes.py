@@ -156,6 +156,14 @@ def make_hitl_node(deps: AgentDependencies):
             summary=summary,
             plan=plan,
         )
+        if not slack_response.get("ok"):
+            return {
+                "slack_channel": slack_response.get("channel") or state.get("slack_channel"),
+                "slack_message_ts": slack_response.get("ts") or state.get("slack_message_ts"),
+                "slack_prompt_sent": False,
+                "error": slack_response.get("message") or "Failed to send Slack approval request.",
+                "result": "Slack approval request could not be delivered.",
+            }
         return {
             "slack_channel": slack_response.get("channel") or state.get("slack_channel"),
             "slack_message_ts": slack_response.get("ts") or state.get("slack_message_ts"),

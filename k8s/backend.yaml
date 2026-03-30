@@ -60,6 +60,8 @@ spec:
               value: ""
             - name: PUBLIC_BASE_URL
               value: https://slack.aqwerty321.me
+            - name: SLACK_DEFAULT_CHANNEL
+              value: "C0AP2V8M939"
             - name: ENABLE_BACKGROUND_POLLING
               value: "false"
             - name: AUDIT_LOG_PATH

@@ -630,6 +630,31 @@ def test_runtime_routes_oomkill_to_hitl_recommendation(tmp_path) -> None:
     assert len(slack_client.messages) == 1
 
 
+def test_runtime_surfaces_slack_delivery_failure_for_hitl_incident(tmp_path) -> None:
+    class FailingSlackClient(RecordingSlackClient):
+        def send_approval_request(self, *, channel, incident_id, summary, plan):
+            return {
+                "ok": False,
+                "stub": False,
+                "channel": channel,
+                "ts": None,
+                "message": "channel_not_found",
+            }
+
+    k8s_client = FakeK8sClient()
+    k8s_client.mode = "oomkill"
+    runtime = build_runtime(tmp_path=tmp_path, k8s_client=k8s_client, slack_client=FailingSlackClient())
+
+    result = runtime.run_once(namespace="default")
+
+    assert result["status"] == "awaiting_human"
+    assert result["awaiting_human"] is True
+    assert result["result"] == "Slack approval request could not be delivered."
+    assert result["error"] == "channel_not_found"
+    assert result["slack_prompt_sent"] is False
+    assert result["slack_message_ts"] is None
+
+
 def test_runtime_marks_rejected_hitl_incident_with_explicit_result(tmp_path) -> None:
     k8s_client = FakeK8sClient()
     k8s_client.mode = "oomkill"
