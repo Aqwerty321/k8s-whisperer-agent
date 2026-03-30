@@ -98,12 +98,24 @@ make prometheus-mcp
 
 This starts the typed Prometheus MCP server backed by `PROMETHEUS_URL`. If Prometheus is not configured or reachable, the server still starts but metric queries return explicit error payloads instead of silently failing.
 
+### 8a. Run the kubectl MCP server
+```bash
+make kubectl-mcp
+```
+
+### 8b. Run the Slack MCP server
+```bash
+make slack-mcp
+```
+
 ### 9. Start a local Prometheus bonus path
 ```bash
 make prometheus-up
 ```
 
 This starts a local Prometheus container on `http://127.0.0.1:9090` and scrapes real minikube cAdvisor metrics through `kubectl proxy`. It is intended as an optional bonus/demo path for Prometheus MCP rather than part of the main judge flow.
+
+Together, the repo now exposes typed MCP servers for Kubernetes, Slack, and Prometheus.
 
 ## Containerized Backend
 

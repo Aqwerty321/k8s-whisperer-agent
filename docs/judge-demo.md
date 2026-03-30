@@ -38,6 +38,10 @@ For a spoken walkthrough with exact commands and judge-facing lines, use `docs/j
    Explain that the same repo now exposes a typed Prometheus MCP server and can query real minikube metrics through a local Prometheus instance.
    Be explicit that the main judged demo remains the proven cluster/Slack/audit flow, while Prometheus is shown as bonus depth.
 
+6. MCP architecture proof if asked
+   Run `make kubectl-mcp` in one terminal and `make slack-mcp` in another.
+   Explain that the repo exposes typed MCP servers for Kubernetes operations, Slack actions, and Prometheus metrics rather than burying these integrations inside untyped helper code.
+
 ## Backup Path
 - If Slack or Cloudflare misbehaves, keep the incident visible in `/api/incidents`
 - Run `bash scripts/approve_incident.sh`

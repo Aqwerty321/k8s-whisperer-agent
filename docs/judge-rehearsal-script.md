@@ -135,6 +135,24 @@ Say:
 
 "We prioritized the fully proven end-to-end judge flow first. Prometheus is a bonus depth path, so we keep it isolated from the main demo instead of risking the core flow on extra metrics infrastructure."
 
+## Optional Bonus: kubectl And Slack MCP Proof
+Use this only if judges ask about explicit MCP tooling.
+
+1. Run:
+
+```bash
+make kubectl-mcp
+```
+
+2. In another terminal run:
+
+```bash
+make slack-mcp
+```
+
+Say:
+"The repo exposes separate typed MCP servers for Kubernetes actions, Slack actions, and Prometheus metrics. That matches the PS requirement to keep tool boundaries explicit instead of hiding everything in one backend function."
+
 ## Key Lines To Emphasize
 - "This is a real cluster, not mocked output."
 - "Only low-blast-radius actions are auto-remediated."
