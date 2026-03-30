@@ -42,7 +42,9 @@ def test_secret_template_contains_expected_keys() -> None:
 def test_deploy_backend_script_forces_rollout_restart() -> None:
     script = Path("scripts/deploy_backend.sh").read_text(encoding="utf-8")
 
-    assert "kubectl rollout restart deployment/k8s-whisperer -n default" in script
+    assert 'kubectl rollout restart deployment/k8s-whisperer -n "${NAMESPACE}"' in script
+    assert '--timeout=180s' in script
+    assert 'show_rollout_debug' in script
 
 
 def test_crashloop_demo_uses_replacement_state_marker() -> None:

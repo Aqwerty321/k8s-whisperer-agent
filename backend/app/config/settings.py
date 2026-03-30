@@ -1,9 +1,10 @@
 from __future__ import annotations
 
 from functools import lru_cache
+from typing import Annotated
 
 from pydantic import Field, field_validator
-from pydantic_settings import BaseSettings, SettingsConfigDict
+from pydantic_settings import BaseSettings, NoDecode, SettingsConfigDict
 
 
 class Settings(BaseSettings):
@@ -28,7 +29,7 @@ class Settings(BaseSettings):
     kubeconfig: str | None = None
     k8s_namespace: str = "default"
     observe_all_namespaces: bool = False
-    observed_namespaces: list[str] = Field(default_factory=list)
+    observed_namespaces: Annotated[list[str], NoDecode] = Field(default_factory=list)
 
     poll_interval_seconds: int = 30
     auto_approve_threshold: float = Field(default=0.8, ge=0.0, le=1.0)
