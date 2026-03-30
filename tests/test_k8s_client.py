@@ -145,3 +145,17 @@ def test_pod_timeout_message_includes_last_observed_readiness() -> None:
     assert "reason=CrashLoopBackOff" in message
     assert "api=False" in message
     assert "sidecar=True" in message
+
+
+def test_cluster_snapshot_clears_stale_load_error_when_client_is_available() -> None:
+    client = K8sClient()
+    client._core_v1 = object()
+    client._apps_v1 = object()
+    client._load_error = "stale forbidden error"
+    client.get_pods = lambda namespace: []
+    client.get_deployments = lambda namespace: []
+    client.get_events = lambda namespace: []
+
+    snapshot = client.get_cluster_snapshot("default")
+
+    assert snapshot["error"] is None

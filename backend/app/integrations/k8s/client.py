@@ -42,6 +42,8 @@ class K8sClient:
 
     def get_cluster_snapshot(self, namespace: str) -> dict[str, Any]:
         self._ensure_client()
+        if self._core_v1 is not None:
+            self._load_error = None
         return {
             "pods": self.get_pods(namespace),
             "deployments": self.get_deployments(namespace),
@@ -51,6 +53,8 @@ class K8sClient:
 
     def get_cluster_snapshot_multi(self, namespaces: list[str] | None = None) -> dict[str, Any]:
         self._ensure_client()
+        if self._core_v1 is not None:
+            self._load_error = None
         if namespaces:
             unique_namespaces = [str(namespace).strip() for namespace in namespaces if str(namespace).strip()]
             pods: list[dict[str, Any]] = []
