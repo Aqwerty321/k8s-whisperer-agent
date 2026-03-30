@@ -3,7 +3,7 @@ PIP := .venv/bin/pip
 PYTEST := .venv/bin/pytest
 UVICORN := .venv/bin/uvicorn
 
-.PHONY: venv install test run lint demo-setup demo-deploy demo-reset demo-ready demo-snapshot demo-reset-oomkill demo-prune judge-next tunnel poll-once docker-build deploy-backend public-bridge
+.PHONY: venv install test run lint demo-setup demo-deploy demo-reset demo-ready demo-snapshot demo-reset-oomkill demo-prune judge-next tunnel poll-once docker-build deploy-backend public-bridge prometheus-up prometheus-mcp
 
 venv:
 	python3 -m venv .venv
@@ -55,3 +55,9 @@ tunnel:
 
 poll-once:
 	$(PYTHON) -c "import json, urllib.request; request = urllib.request.Request('http://localhost:8000/api/poller/run-once', method='POST'); response = urllib.request.urlopen(request); print(json.dumps(json.loads(response.read().decode('utf-8')), indent=2))"
+
+prometheus-up:
+	bash scripts/run_prometheus_local.sh
+
+prometheus-mcp:
+	$(PYTHON) -m backend.app.mcp.prometheus_server

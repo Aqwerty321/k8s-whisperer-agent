@@ -119,6 +119,22 @@ curl -sS "http://127.0.0.1:8010/api/incidents/$REJECT_ID" | jq && curl -sS "http
 Say:
 "A rejected action is also auditable. The operator decision is recorded, and no cluster mutation is executed."
 
+## Optional Bonus: Prometheus MCP Proof
+Use this only if judges ask about Prometheus or MCP depth.
+
+1. Run:
+
+```bash
+make prometheus-up && make prometheus-mcp
+```
+
+Say:
+"Beyond kubectl and Slack MCP servers, we also expose a typed Prometheus MCP server and connect it to a real local Prometheus instance scraping minikube metrics."
+
+2. If they ask why it is not in the main live demo, say:
+
+"We prioritized the fully proven end-to-end judge flow first. Prometheus is a bonus depth path, so we keep it isolated from the main demo instead of risking the core flow on extra metrics infrastructure."
+
 ## Key Lines To Emphasize
 - "This is a real cluster, not mocked output."
 - "Only low-blast-radius actions are auto-remediated."

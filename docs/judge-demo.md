@@ -33,6 +33,11 @@ For a spoken walkthrough with exact commands and judge-facing lines, use `docs/j
    Run `bash scripts/demo_incident.sh pending | jq`
    Explain that K8sWhisperer stops short of unsafe mutation and gives operator guidance.
 
+5. Prometheus MCP bonus proof if asked
+   Run `make prometheus-up` and then `make prometheus-mcp` in a separate terminal.
+   Explain that the same repo now exposes a typed Prometheus MCP server and can query real minikube metrics through a local Prometheus instance.
+   Be explicit that the main judged demo remains the proven cluster/Slack/audit flow, while Prometheus is shown as bonus depth.
+
 ## Backup Path
 - If Slack or Cloudflare misbehaves, keep the incident visible in `/api/incidents`
 - Run `bash scripts/approve_incident.sh`

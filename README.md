@@ -91,6 +91,20 @@ For a stable custom-domain setup, use the named tunnel workflow documented in `d
 make test
 ```
 
+### 8. Run the Prometheus MCP server
+```bash
+make prometheus-mcp
+```
+
+This starts the typed Prometheus MCP server backed by `PROMETHEUS_URL`. If Prometheus is not configured or reachable, the server still starts but metric queries return explicit error payloads instead of silently failing.
+
+### 9. Start a local Prometheus bonus path
+```bash
+make prometheus-up
+```
+
+This starts a local Prometheus container on `http://127.0.0.1:9090` and scrapes real minikube cAdvisor metrics through `kubectl proxy`. It is intended as an optional bonus/demo path for Prometheus MCP rather than part of the main judge flow.
+
 ## Containerized Backend
 
 ### Build the API image locally

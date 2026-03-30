@@ -24,7 +24,7 @@ The scaffold follows the PS1 control loop directly:
 - `backend/app/agent/checkpointer.py`: disk-backed LangGraph checkpoint saver
 - `backend/app/agent/safety.py`: threshold and denylist based routing
 - `backend/app/integrations/*`: thin wrappers for Kubernetes, Slack, and Gemini
-- `backend/app/mcp/*`: typed MCP servers for Kubernetes and Slack tools
+- `backend/app/mcp/*`: typed MCP servers for Kubernetes, Slack, and Prometheus tools
 - `backend/app/attestation/*`: optional Stellar bonus path, isolated from the core flow
 
 ## First Implemented Live Path
